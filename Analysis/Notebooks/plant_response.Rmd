@@ -1,0 +1,309 @@
+Load libraries
+```{r}
+library(DESeq2)
+library(ggdendro)
+library(cowplot)
+library(tidyverse)
+```
+
+Load data
+```{r}
+map <- readRDS("../Data/RNASeq_map.RDS")
+dds <- readRDS("../Data/msu_dds.RDS")
+
+# Calculate the adjusted p-values after pooling all contrasts of the same tissue together
+trt.res <- readRDS("../Data/msu_trt_res.RDS") %>% 
+  filter(!is.na(p.adjusted)) %>% 
+  group_by(Tissue) %>% 
+  mutate(p.adjusted2 = p.adjust(p.value, method = "fdr")) %>% 
+  ungroup()
+```
+
+Perform PCA
+```{r}
+# Perform normalization
+vsd <- vst(dds, blind = FALSE)
+
+# Run PCA
+pca <- plotPCA(vsd, intgroup = c("Tissue", "Soil", "Treatment"), returnData = TRUE, ntop = nrow(dds))
+percentVar <- round(100 * attr(pca, "percentVar"))
+
+# Retrieve PCA axes for plotting
+pca <- pca %>% 
+  select(PC1, PC2, name) %>% 
+  inner_join(map, by = c("name" = "SampleID")) 
+
+#Plot
+pca.p <- pca %>%
+  mutate(Color = interaction(Tissue, Treatment)) %>% 
+  mutate(Color = fct_relevel(Color,
+                             "Leaf.Ino", "Leaf.NC", "Root.Ino", "Root.NC")) %>% 
+  mutate(Color = fct_recode(Color,
+                            "Root SI" = "Root.Ino",
+                            "Root MI" = "Root.NC",
+                            "Leaf SI" = "Leaf.Ino",
+                            "Leaf MI" = "Leaf.NC")) %>% 
+ggplot( aes(PC1, PC2, color = Color, fill = Color)) +
+  geom_point(size = 3, alpha = 1, shape = 21, color = "gray25") +
+  scale_fill_manual(values = c("#4D9221", "#B8E186", "#8C510A", "#DFC27D"), name = "") +
+  scale_color_manual(values = c("#4D9221", "#B8E186", "#8C510A", "#DFC27D"), guide = F) +
+  xlab(paste0("PC1 (",percentVar[1],"%)")) +
+  ylab(paste0("PC2 (",percentVar[2],"%)")) + 
+  guides(fill = guide_legend(ncol = 2)) +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        legend.position = "top")
+
+pca.p
+```
+
+Function to get stats from Tukey comparisons
+```{r}
+get_letters <- function(tukey){
+  multcomp::cld(tukey, level = 0.05) %>% 
+    .$mcletters %>% 
+    .$Letters %>% 
+    as.data.frame() %>% 
+    rename(Letter = ".") %>% 
+    mutate(Group = row.names(.))
+}
+```
+
+Euclidean distance distribution
+```{r}
+# Calculate Euclidean distances on normalized gene table
+sample.dist <- dist(t(assay(vsd)))
+
+# Format distance data
+sample.dist.tidy <- as.data.frame(as.matrix(sample.dist)) %>% 
+  mutate(SampleID.x = row.names(.)) %>% 
+  gather(key = "SampleID.y", value = "Distance", -SampleID.x) %>% 
+  filter(!is.na(Distance)) %>% 
+  filter(Distance > 0) %>% 
+  inner_join(map, by = c("SampleID.x" = "SampleID")) %>% 
+  inner_join(map, by = c("SampleID.y" = "SampleID"))
+
+# Generate a subset with all the distances between soil inoculated and mock inoculated transcriptomes within each soil and tisse type
+trt.dist <- sample.dist.tidy %>% 
+  filter(Tissue.x == Tissue.y) %>% 
+  filter(Treatment.x != Treatment.y) %>% 
+  filter(Soil.x == Soil.y) %>% 
+  mutate(Soil.x = fct_recode(Soil.x,
+                             Arbuckle = "Arb",
+                             Biggs = "Big",
+                             Davis = "Dav")) %>% 
+  group_by(Soil.x, Tissue.x, Distance) %>% 
+  count() %>% 
+  ungroup() %>% 
+  mutate(Group = paste(Soil.x, Tissue.x, sep = ".")) %>% 
+  mutate(Group = as.factor(Group))
+
+# Run Tukey
+trt.max <- trt.dist %>% group_by(Soil.x, Tissue.x) %>% summarise(Max = max(Distance))
+trt.lm <- lm(Distance ~ Group, data = trt.dist)
+trt.tukey <- multcomp::glht(trt.lm, linfct = multcomp::mcp(Group = "Tukey")) %>% summary()
+trt.letters <- get_letters(trt.tukey) %>% 
+  separate(Group, c("Soil.x", "Tissue.x")) %>% 
+  inner_join(trt.max, by = c("Soil.x", "Tissue.x"))
+
+# Plot
+trt.dist %>% 
+  ggplot(aes(Soil.x, Distance, fill = Soil.x)) +
+  geom_boxplot(size = 1) +
+  geom_text(data = trt.letters, aes(y = Max + 5, label = Letter)) +
+  scale_fill_brewer(name = "Soil", 
+                     palette = "Greys",
+                    guide = F) +
+  xlab("") +
+  ylab("Euclidean distance") +
+  facet_wrap(~ Tissue.x) +
+  theme_minimal() +
+  theme(text = element_text(size = 13),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.text = element_text(size = 12, colour = "white"),
+        strip.background = element_rect(fill="gray25"))
+```
+
+Generate supplementary table with all DEGs
+```{r}
+trt.sig <- trt.res %>% 
+  filter(p.adjusted2 < 0.05) 
+
+supp.table.deg <- trt.sig %>% 
+  mutate(Direction = ifelse(estimate > 0, "Upregulated by MB", "Downregulated by MB")) %>% 
+  group_by(Tissue, Direction, gene) %>% 
+  mutate(n = n()) %>% 
+  ungroup() %>% 
+  mutate(Core = n == 3) %>% 
+  select(Tissue, Soil, gene, Direction, Core, baseMean:p.value, p.adjusted2) %>% 
+  rename("log2FoldChange_SIvsMI" = "estimate",
+         "p.adjusted" = "p.adjusted2") 
+  
+
+write.table(supp.table.deg, "../Tables/supp.deg.deseq.tsv", quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+Get total number of DEGs per soil per tissue
+```{r}
+trt.sig %>% 
+  group_by(Tissue, Soil) %>% 
+  count() 
+```
+
+Get percent DEGs in core response
+```{r}
+total <- trt.sig %>% 
+  group_by(Tissue, gene) %>% 
+  count() %>% 
+  select(-n) %>% 
+  group_by(Tissue) %>% 
+  summarise(Total = n()) 
+
+trt.sig %>% 
+  mutate(Direction = ifelse(estimate > 0, "Upregulated by MB", "Downregulated by MB")) %>% 
+  group_by(Tissue, gene, Direction) %>% 
+  summarise(Set = n()) %>% 
+  group_by(Tissue, Set) %>% 
+  count() %>% 
+  inner_join(total, by = "Tissue") %>% 
+  mutate(Percent = n/Total)
+```
+
+MA plot
+```{r}
+# Update results data frame with new labels for plotting
+trt.res <- trt.res %>% 
+  mutate(estimate = ifelse(abs(estimate) > 10, 10*sign(estimate), estimate)) %>% 
+  mutate(Direction = case_when(p.adjusted2 >= 0.05 | is.na(p.adjusted2) ~ "NS",
+                               p.adjusted2 < 0.05 & Tissue == "Leaf" & estimate > 0 ~ "L.Up",
+                               p.adjusted2 < 0.05 & Tissue == "Leaf" & estimate < 0 ~ "L.Dn",
+                               p.adjusted2 < 0.05 & Tissue == "Root" & estimate > 0 ~ "R.Up",
+                               p.adjusted2 < 0.05 & Tissue == "Root" & estimate < 0 ~ "R.Dn")) %>% 
+  mutate(Direction = fct_relevel(Direction, "R.Up", "R.Dn", "L.Up", "L.Dn", "NS")) %>% 
+  mutate(Soil = fct_recode(Soil,
+                           Arbuckle = "Arb",
+                           Biggs = "Big", 
+                           Davis = "Dav")) %>% 
+  mutate(Tissue = fct_relevel(Tissue, "Root")) 
+
+# Generate a data frame with the number of DEGs per soil and tissue type
+ndag <- trt.res %>% 
+  filter(p.adjusted2 < 0.05) %>% 
+  group_by(Tissue, Soil, Direction) %>% 
+  count()
+
+# Plot
+ma.p <- trt.res %>% 
+  ggplot(aes(baseMean, -estimate, color = Direction)) +
+  geom_point(aes(alpha = p.adjusted2 >= 0.05 | is.na(p.adjusted2)), size = 1) +
+  geom_text(data = filter(ndag, Direction %in% c("R.Up", "L.Up")), aes(x = 1000, y = -2, label = n), color = "black") +
+  geom_text(data = filter(ndag, Direction %in% c("R.Dn", "L.Dn")), aes(x = 1000, y = 2, label = n), color = "white") +
+  scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  facet_grid(Tissue ~ Soil) +
+  scale_alpha_manual(values = c(1, 0.1), 
+                     guide = F) +
+  scale_color_manual(values = c("#DFC27D", "#8C510A", "#B8E186", "#4D9221", "gray75"),
+                     guide = F) +
+  ylab("SI vs MI\nfold change (log2)") +
+  xlab("Mean of normalized counts") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        strip.text = element_text(size = 10, colour = "white"),
+        strip.background = element_rect(fill="gray25"))
+
+ma.p
+```
+
+Upset plot
+```{r}
+# Generate a data frame with the number of DEGs in each overlap
+baroverlap.df <- trt.res %>%
+  filter(p.adjusted2 < 0.05) %>% 
+  mutate(Direction = fct_recode(Direction,
+                                "Root genes\nupreg. by MB" = "R.Up",
+                                "Root genes\ndownreg. by MB" = "R.Dn",
+                                "Leaf genes\nupreg. by MB" = "L.Up",
+                                "Leaf genes\ndownreg. by MB" = "L.Dn")) %>%
+  mutate(Direction2 = ifelse(estimate > 0, "Up","Down")) %>% 
+  group_by(Tissue, Direction, Direction2, gene) %>% 
+  summarise(Set = paste0(as.character(Soil), collapse = ""))  %>% 
+  mutate(Set = fct_relevel(Set, 
+                           "Arbuckle", "Biggs", "Davis",
+                           "ArbuckleBiggs", "ArbuckleDavis", "BiggsDavis",
+                           "ArbuckleBiggsDavis")) %>% 
+  group_by(Tissue, Direction, Direction2, Set) %>% 
+  count() %>% 
+  mutate(Color = ifelse(Set == "ArbuckleBiggsDavis","Core", "No")) 
+
+# Plot 
+overlap <- trt.res %>%
+  filter(p.adjusted2 < 0.05) %>% 
+  mutate(Direction = fct_recode(Direction,
+                                "Root genes\nupreg. by MB" = "R.Up",
+                                "Root genes\ndownreg. by MB" = "R.Dn",
+                                "Leaf genes\nupreg. by MB" = "L.Up",
+                                "Leaf genes\ndownreg. by MB" = "L.Dn")) %>% 
+  group_by(Tissue, Direction, gene) %>% 
+  mutate(Set = paste0(as.character(Soil), collapse = "")) %>% 
+  group_by(Tissue, Direction, Set, Soil) %>% 
+  count()  %>% 
+  ungroup() %>% 
+  mutate(Set = fct_relevel(Set, 
+                           "Arbuckle", "Biggs", "Davis",
+                           "ArbuckleBiggs", "ArbuckleDavis", "BiggsDavis",
+                           "ArbuckleBiggsDavis")) %>% 
+  ggplot(aes(Soil, Set, shape = Soil, fill = Direction)) +
+  geom_tile(color = "white", size = 2) +
+  scale_y_discrete(position = "right") +
+  scale_fill_manual(values = c("#8C510A", "#DFC27D", "#4D9221", "#B8E186"), guide = F) +
+  facet_grid(. ~ Direction) +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        axis.text.x = element_blank(),
+        axis.title = element_blank(),
+        strip.text = element_blank(),
+        panel.grid = element_blank()) + coord_flip()
+
+baroverlap <- baroverlap.df %>% 
+  ggplot(aes(Set, n, fill = Direction, color = Color)) + 
+  geom_bar(stat = "identity", size = 1) +
+  geom_text(data = filter(baroverlap.df, Direction2 == "Up" & Set == "ArbuckleBiggsDavis"), aes(y = n - 30, label = n), hjust = 1, color = "white", angle = 90, size = 3.5) +
+  geom_text(data = filter(baroverlap.df, Direction2 == "Down" & Set == "ArbuckleBiggsDavis"), aes(y = n - 30, label = n), hjust = 1, color = "black", angle = 90, size = 3.5) +
+  scale_fill_manual(values = c("#8C510A", "#DFC27D", "#4D9221", "#B8E186"), guide = F) +
+  scale_color_manual(values = c("black", "white")) +
+  facet_grid(. ~ Direction) +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        axis.text.x = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank(),
+        strip.text = element_text(size = 10, colour = "white"),
+        strip.background = element_rect(fill="gray25"),
+        legend.position = "none")
+
+
+upset.p <- cowplot::plot_grid(baroverlap, overlap,
+                   ncol = 1,
+                   align = "v",
+                   axis = "lrtb",
+                   rel_heights = c(5,2))
+
+
+upset.p
+```
+
+Get stats about the number of core genes
+```{r}
+baroverlap.df %>% mutate(Core = Color == "Core") %>% group_by(Tissue, Core) %>% summarise(Total = sum(n))
+```
+
+Put it all together
+```{r}
+### 850:650
+top <- plot_grid(pca.p, ma.p, rel_widths = c(1,2),
+                  labels = c("A", "B"), label_size = 20)
+
+plot_grid(top, upset.p, ncol = 1, 
+          rel_heights = c(6,6),
+          labels = c(NA, "C"), label_size = 20)
+```

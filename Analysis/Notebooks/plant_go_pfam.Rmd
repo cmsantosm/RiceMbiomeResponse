@@ -1,0 +1,270 @@
+Load libraries
+```{r}
+library(topGO)
+library(cowplot)
+library(tidytext)
+library(tidyverse)
+```
+
+Load data
+```{r}
+map <- readRDS("../Data/RNASeq_map.RDS")
+
+trt.res <- readRDS("../Data/msu_trt_res.RDS") %>% 
+  filter(!is.na(p.adjusted)) %>% 
+  filter(baseMean > 0) %>% 
+  group_by(Tissue) %>% 
+  mutate(p.adjusted2 = p.adjust(p.value, method = "fdr")) %>% 
+  ungroup()
+
+go.defs <- readRDS("../Data/go_defs.rds")
+go.topgo <- readRDS("../Data/msu_topgo.RDS")
+
+pfam <- readRDS("../Data/msu_pfam.RDS")
+```
+
+Create data frame with the list of genes in each subset of the core response
+```{r}
+trt.sig <- trt.res %>% 
+  filter(p.adjusted2 < 0.05)
+
+contra.df <- trt.sig %>% 
+    mutate(Direction = ifelse(estimate > 0, "Upregulated", "Downregulated")) %>% 
+  group_by(Tissue, Direction, gene) %>% 
+  dplyr::count() %>% 
+  filter(n == 3)
+```
+
+Create topGO objects
+```{r}
+assayed.genes <- trt.res$gene %>% unique()
+tmp.sig.genes <- sample(assayed.genes, 100)
+tmp.gene.vec <- as.integer(assayed.genes %in% tmp.sig.genes)
+names(tmp.gene.vec) <- assayed.genes
+
+# For biological process ontology
+GOdata.BP <- new("topGOdata",
+                description = "test",
+                ontology = "BP",
+                allGenes = as.factor(tmp.gene.vec),
+                annot = annFUN.gene2GO,
+                gene2GO = go.topgo,
+                nodeSize = 1)
+
+# For molecular function ontology
+GOdata.MF <- new("topGOdata",
+                description = "test",
+                ontology = "MF",
+                allGenes = as.factor(tmp.gene.vec),
+                annot = annFUN.gene2GO,
+                gene2GO = go.topgo,
+                nodeSize = 1)
+```
+
+Make function to run topGO pipeline
+```{r}
+run_topgo <- function(df, GOdata){
+  sig.genes <- df$gene
+  gene.vec <- as.integer(assayed.genes %in% sig.genes)
+  names(gene.vec) <- assayed.genes
+
+  GOdata <- updateGenes(GOdata, as.factor(gene.vec))
+
+  classic <- runTest(GOdata, algorithm = "classic", statistic = "fisher") 
+  w01 <- runTest(GOdata, algorithm = "weight01", statistic = "fisher")
+  
+  GenTable(
+    GOdata,
+    classic = classic,
+    w01 = w01,
+    orderBy = "classic",
+    ranksOf = "classic",
+    topNodes = length(usedGO(GOdata))
+    ) %>%
+    mutate(classic = as.numeric(classic),
+    w01 = as.numeric(w01)) %>% 
+    rename(GO = GO.ID)
+} 
+```
+
+Function to perform hypergeometric tests on Pfam terms
+```{r}
+gene.universe <- trt.res %>% group_by(gene) %>% dplyr::count()
+
+pfam.clust <- pfam %>% 
+  right_join(gene.universe, by = "gene") %>% 
+  select(-n) %>% 
+  mutate(pfam = ifelse(is.na(pfam), "Unannotated", as.character(pfam)),
+         name = ifelse(is.na(name), "Unannotated", as.character(name))) 
+
+get_pfam <- function(x){
+  genes <- x$gene
+  res = clusterProfiler::enricher(gene = genes, 
+             universe = gene.universe$gene, 
+             TERM2GENE = select(pfam.clust, pfam, gene), 
+             TERM2NAME = select(pfam.clust, pfam, name),
+             pvalueCutoff = 1,
+             qvalueCutoff = 1,
+             minGSSize = 10,
+             maxGSSize = 5000)
+  as.data.frame(res)
+}
+```
+
+Generate a nested data frame to run enrichment analyses
+```{r}
+core.nest <- contra.df %>% 
+  group_by(Tissue, Direction) %>% 
+  nest() %>% 
+  mutate(hyperG = map(data, get_pfam),
+         GO_BP = map(data, run_topgo, GOdata.BP),
+         GO_MF = map(data, run_topgo, GOdata.MF))
+```
+
+Unnest and compile GO results
+```{r}
+go.res.bp <- core.nest %>% 
+  unnest(GO_BP) %>% 
+  mutate(Ontology = "Biological Process")
+
+go.res.mf <- core.nest %>% 
+  unnest(GO_MF) %>% 
+  mutate(Ontology = "Molecular Function")
+
+go.res <- rbind(go.res.bp, go.res.mf)
+```
+
+Generate supplementary table with all significant GO terms
+```{r}
+supp.table.go <- go.res %>% 
+  ungroup() %>% 
+  group_by(Tissue, Ontology) %>% 
+  mutate(w012 = p.adjust(w01, method = "fdr")) %>% 
+  filter(w012 < 0.05) %>% 
+  ungroup() %>% 
+  select(Tissue, Direction, GO, Term, Significant, Annotated, w012, Ontology) %>% 
+  rename("ID" = "GO",
+         "Description" = "Term",
+         "GeneSet" = "Significant",
+         "GeneUniverse" = "Annotated",
+         "p.val" = "w012",
+         "Annotation" = "Ontology")
+
+write.table(supp.table.go, "../Tables/supp.go.tsv", quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+Subset GO results to only include top 5 most significant terms in each subset
+```{r}
+go.res.tidy <- supp.table.go %>% 
+  group_by(Tissue, Direction, Annotation) %>% 
+  mutate(Rank = rank(p.val)) %>%
+  filter(Rank < 6) %>% 
+  ungroup() 
+```
+
+Generate supplementary table with all significant Pfam terms
+```{r}
+supp.table.pfam <- core.nest %>% 
+  unnest(hyperG) %>% 
+  group_by(Tissue) %>% 
+  mutate(p.adjusted2 = p.adjust(pvalue, method = "fdr")) %>% 
+  filter(p.adjusted2 < 0.05) %>% 
+  separate(GeneRatio, c("GeneSet", "TotalSet"), sep = "/") %>% 
+  separate(BgRatio, c("GeneUniverse", "TotalUniverse"), sep = "/") %>% 
+  mutate(GeneSet = as.numeric(GeneSet),
+         TotalSet = as.numeric(TotalSet),
+         GeneUniverse = as.numeric(GeneUniverse),
+         TotalUniverse = as.numeric(TotalUniverse)) %>% 
+  select(Tissue, Direction, ID, Description, GeneSet, GeneUniverse, p.adjusted2) %>% 
+  rename("p.val" = "p.adjusted2") %>% 
+  mutate(Annotation = "Pfam")
+
+write.table(supp.table.pfam, "../Tables/supp.pfam.tsv", quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+Subset Pfam results to only include top 5 most significant terms in each subset
+```{r}
+pfam.res.tidy <- supp.table.pfam %>% 
+  group_by(Tissue, Direction) %>% 
+  mutate(Rank = rank(p.val)) %>% 
+  filter(Rank < 6) %>% 
+  ungroup()
+```
+
+Compile results and plot
+```{r}
+all.res <- rbind(pfam.res.tidy %>% ungroup(), go.res.tidy %>% ungroup())
+
+root.p <- all.res %>% 
+  mutate(Color = interaction(Tissue, Direction)) %>% 
+  mutate(Term = reorder_within(Description, -log10(p.val), Color)) %>% 
+  mutate(Set = paste(Tissue, Direction, sep = ".")) %>% 
+  mutate(Set = fct_recode(Set,
+                          "Root genes\nupreg. by MB" = "Root.Upregulated",
+                          "Root genes\ndownreg. by MB" = "Root.Downregulated",
+                          "Leaf genes\nupreg. by MB" = "Leaf.Upregulated",
+                          "Leaf genes\ndownreg. by MB" = "Leaf.Downregulated")) %>% 
+  mutate(Set = fct_relevel(Set,
+                           "Root genes\nupreg. by MB", "Root genes\ndownreg. by MB",
+                           "Leaf genes\nupreg. by MB", "Leaf genes\ndownreg. by MB")) %>% 
+  mutate(Annotation = fct_recode(Annotation,
+                                 "BP" = "Biological Process",
+                                 "MF" = "Molecular Function")) %>% 
+  mutate(Annotation = fct_relevel(Annotation,
+                                  "Pfam")) %>% 
+  filter(Tissue == "Root") %>% 
+  ggplot(aes(Term, -log10(p.val), fill = Set)) +
+  geom_bar(stat = "identity", color = "black") +
+  scale_x_reordered() +
+  facet_grid(Direction + Annotation ~ Tissue, scales = "free", space = "free") +
+  coord_flip() +
+  scale_fill_manual(name = "",values = c("#8C510A", "#DFC27D", "#4D9221","#B8E186"),
+                    limits = c("Root genes\nupreg. by MB", "Root genes\ndownreg. by MB", "Leaf genes\nupreg. by MB", "Leaf genes\ndownreg. by MB")) +
+  scale_color_manual(values = c("black", "white"), guide = F) +
+  coord_flip() +
+  ylab("-log10 p-value") +
+  xlab("") +
+  ylim(0,10) +
+  theme_bw() +
+  theme(text = element_text(size = 10),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+  
+
+leaf.p <- all.res %>% 
+  mutate(Color = interaction(Tissue, Direction)) %>% 
+  mutate(Term = reorder_within(Description, -log10(p.val), Color)) %>% 
+  mutate(Set = paste(Tissue, Direction, sep = ".")) %>% 
+  mutate(Set = fct_recode(Set,
+                          "Root genes\nupreg. by MB" = "Root.Upregulated",
+                          "Root genes\ndownreg. by MB" = "Root.Downregulated",
+                          "Leaf genes\nupreg. by MB" = "Leaf.Upregulated",
+                          "Leaf genes\ndownreg. by MB" = "Leaf.Downregulated")) %>% 
+  mutate(Set = fct_relevel(Set,
+                           "Root genes\nupreg. by MB", "Root genes\ndownreg. by MB",
+                           "Leaf genes\nupreg. by MB", "Leaf genes\ndownreg. by MB")) %>% 
+  mutate(Annotation = fct_recode(Annotation,
+                                 "BP" = "Biological Process",
+                                 "MF" = "Molecular Function")) %>% 
+  mutate(Annotation = fct_relevel(Annotation,
+                                  "Pfam")) %>% 
+  filter(Tissue == "Leaf") %>% 
+  ggplot(aes(Term, -log10(p.val), fill = Set)) +
+  geom_bar(stat = "identity", color = "black") +
+  scale_x_reordered() +
+  facet_grid(Direction + Annotation ~ Tissue, scales = "free", space = "free") +
+  coord_flip() +
+  scale_fill_manual(name = "",values = c("#8C510A", "#DFC27D", "#4D9221","#B8E186"),
+                    limits = c("Root genes\nupreg. by MB", "Root genes\ndownreg. by MB", "Leaf genes\nupreg. by MB", "Leaf genes\ndownreg. by MB")) +
+  scale_color_manual(values = c("black", "white"), guide = F) +
+  coord_flip() +
+  ylab("-log10 p-value") +
+  xlab("") +
+  ylim(0,10) +
+  theme_bw() +
+  theme(text = element_text(size = 10),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+cowplot::plot_grid(root.p, leaf.p, align = "vh", axis = "lrbt")
+```

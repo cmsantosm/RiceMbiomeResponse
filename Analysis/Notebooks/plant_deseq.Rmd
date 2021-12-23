@@ -1,0 +1,77 @@
+Load libraries
+```{r}
+library(DESeq2)
+library(tidyverse)
+library(biobroom)
+```
+
+Load data
+```{r}
+txi <- readRDS("../Data/txi_msu.rds")
+map <- readRDS("../Data/RNASeq_map.RDS")
+
+map <- map[match(colnames(txi$abundance), map$SampleID), ]
+```
+
+Generate DESeq object to test the effect of inoculating a soil microibome on the plant transcriptomes
+```{r}
+dds <- DESeqDataSetFromTximport(txi,
+                                colData = map,
+                                design = ~ Group)
+```
+
+Perform contrasts comparing soil-inoculated vs mock-inoculated transcriptomes in each leaf and soil type
+```{r}
+dds <- DESeq(dds)
+
+
+leaf.arb <- results(dds, contrast = c("Group", "Leaf.Ino.Arb", "Leaf.NC.Arb")) %>% tidy() %>% mutate(Tissue = "Leaf", Soil = "Arb")
+leaf.big <- results(dds, contrast = c("Group", "Leaf.Ino.Big", "Leaf.NC.Big")) %>% tidy() %>% mutate(Tissue = "Leaf", Soil = "Big")
+leaf.dav <- results(dds, contrast = c("Group", "Leaf.Ino.Dav", "Leaf.NC.Dav")) %>% tidy() %>% mutate(Tissue = "Leaf", Soil = "Dav")
+root.arb <- results(dds, contrast = c("Group", "Root.Ino.Arb", "Root.NC.Arb")) %>% tidy() %>% mutate(Tissue = "Root", Soil = "Arb")
+root.big <- results(dds, contrast = c("Group", "Root.Ino.Big", "Root.NC.Big")) %>% tidy() %>% mutate(Tissue = "Root", Soil = "Big")
+root.dav <- results(dds, contrast = c("Group", "Root.Ino.Dav", "Root.NC.Dav")) %>% tidy() %>% mutate(Tissue = "Root", Soil = "Dav")
+
+trt.res <- rbind(leaf.arb, leaf.big, leaf.dav,
+                 root.arb, root.big, root.dav)
+
+```
+
+Generate DESeq object to test the effect of soil type on plant transcriptomes
+```{r}
+dds2 <- DESeqDataSetFromTximport(txi,
+                                colData = map,
+                                design = ~ Soil)
+```
+
+Run an LRT testing the effect of soil type
+```{r}
+root.map <- filter(map, Tissue == "Root" & Treatment == "Ino")
+root.dds <-  dds2[, as.vector(root.map$SampleID)]
+root.dds <- DESeq(root.dds, test = "LRT", reduced = ~ 1)
+root.soil.res <- results(root.dds) %>% tidy() %>% mutate(Tissue = "Root", Treatment = "Ino")
+
+leaf.map <- filter(map, Tissue == "Leaf" & Treatment == "Ino")
+leaf.dds <-  dds2[, as.vector(leaf.map$SampleID)]
+leaf.dds <- DESeq(leaf.dds, test = "LRT", reduced = ~ 1)
+leaf.soil.res <- results(leaf.dds) %>% tidy() %>% mutate(Tissue = "Leaf", Treatment = "Ino")
+
+root.nc.map <- filter(map, Tissue == "Root" & Treatment == "NC")
+root.nc.dds <-  dds2[, as.vector(root.nc.map$SampleID)]
+root.nc.dds <- DESeq(root.nc.dds, test = "LRT", reduced = ~ 1)
+root.nc.soil.res <- results(root.nc.dds) %>% tidy() %>% mutate(Tissue = "Root", Treatment = "NC")
+
+leaf.nc.map <- filter(map, Tissue == "Leaf" & Treatment == "NC")
+leaf.nc.dds <-  dds2[, as.vector(leaf.nc.map$SampleID)]
+leaf.nc.dds <- DESeq(leaf.nc.dds, test = "LRT", reduced = ~ 1)
+leaf.nc.soil.res <- results(leaf.nc.dds) %>% tidy() %>% mutate(Tissue = "Leaf", Treatment = "NC")
+
+soil.res <- rbind(root.soil.res, leaf.soil.res, root.nc.soil.res, leaf.nc.soil.res) 
+```
+
+Save results
+```{r}
+saveRDS(dds, "../Data/msu_dds.RDS")
+saveRDS(trt.res, "../Data/msu_trt_res.RDS")
+saveRDS(soil.res, "../Data/msu_soil_res.RDS")
+```

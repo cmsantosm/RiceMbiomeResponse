@@ -1,0 +1,338 @@
+Load libraries
+```{r}
+library(DESeq2)
+library(biobroom)
+library(ggdendro)
+library(vegan)
+library(cowplot)
+library(RColorBrewer)
+library(tidyverse)
+
+source("../../General/rmb_functions.R")
+source("../../General/parameters.R")
+```
+
+Load data
+```{r}
+map <- readRDS("../Data/GNOTO_MB_map.RDS")
+
+# OTU table with organellar reads
+whole.otu <- readRDS("../Data/SILVAcr_whole_otu.RDS")
+
+# OTU table without organellar reads
+otu <- readRDS("../Data/SILVAcr_otu.RDS")
+otu <- otu[,colnames(otu) %in% map$SampleID]
+
+tax <- readRDS("../Data/SILVAcr_tax.RDS")
+```
+
+Function to get the tukey stats for plotting
+```{r}
+get_letters <- function(tukey){
+  multcomp::cld(tukey, level = 0.05) %>% 
+    .$mcletters %>% 
+    .$Letters %>% 
+    as.data.frame() %>% 
+    rename(Letter = ".") %>% 
+    mutate(Group = row.names(.))
+}
+```
+
+Root colonization analysis
+```{r}
+# Calculate the percent of microbial reads in each subgroup
+pct.microbe.df <- whole.otu %>%
+  rel_ab() %>% 
+  tidy_otu() %>% 
+  inner_join(tax, by = "OTU_ID") %>% 
+  group_by(SampleID, Assignment) %>% 
+  summarise(Total = sum(Count)) %>% 
+  inner_join(map, by = "SampleID") %>% 
+  filter(Compartment == "ES") %>% 
+  filter(Assignment == "Microbial") %>% 
+  ungroup() %>% 
+  mutate(Group = paste(Soil, Treatment, sep = ".")) %>% 
+  mutate(Group = as.factor(Group))
+
+# Tukey comparisons
+pct.lm <- lm(Total ~ Group, data = pct.microbe.df)
+pct.tukey <- multcomp::glht(pct.lm, linfct = multcomp::mcp(Group = "Tukey")) %>% summary()
+pct.letters <- get_letters(pct.tukey) %>% 
+  separate(Group, c("Soil", "Treatment"))
+
+# Get the stats for plotting
+pct.microbe.stats <- pct.microbe.df %>% 
+  group_by(Soil, Treatment) %>% 
+  summarise(Mean = mean(Total),
+            SD = sd(Total)) %>% 
+  inner_join(pct.letters, by = c("Treatment", "Soil")) %>% 
+  ungroup() %>% 
+  mutate(Treatment = fct_recode(Treatment, 
+                                "ES MI" = "NC",
+                                "ES SI" = "Ino",
+                                "ES SG" = "PC")) %>% 
+  mutate(Treatment = fct_relevel(Treatment, 
+                                 "ES SG",
+                                 "ES SI",
+                                 "ES MI"))
+
+# Plot
+a <- pct.microbe.stats %>% 
+  ggplot(aes(Treatment, Mean)) +
+  geom_bar(stat = "identity", aes(fill = Treatment)) +
+  geom_errorbar(aes(ymin = Mean - SD, ymax = Mean + SD), width = 0.2, size = 0.5, color = "black") +
+  geom_text(aes(label = Letter, y = Mean + SD + 5)) +
+  ylab("% Microbial reads") +
+  xlab("") +
+  facet_grid(.~Soil) +
+  scale_fill_manual(values = c("#FF7F00", "#FDBF6F", "#FDBF6F")) +
+  theme_minimal() +
+  theme(text = element_text(size = 13),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.text = element_text(size = 12, colour = "white"),
+        strip.background = element_rect(fill="gray25"),
+        legend.position = "none") 
+a
+```
+Remove non prevalent OTUs (occupancy < 5% samples) before running downstream analyses
+```{r}
+# Calculate relative abundances
+otu.ra <- rel_ab(otu)
+otu.ra.tidy <- tidy_otu(otu.ra)
+
+# Subset data for PCoA
+pcoa.map <- map %>% 
+  filter(Treatment != "NC")
+pcoa.otu <- otu.ra[,colnames(otu.ra) %in% pcoa.map$SampleID]
+pcoa.otu <- pcoa.otu[rowSums(pcoa.otu)> 0.05*ncol(pcoa.otu),]
+
+# Get the top taxa in the dataset
+tax <- expand_proteo(tax)
+top.tax <- get_top_taxa(otu.ra, tax, rank = "PhyClass", n = 11)
+tax <- collapse_other(tax, top.tax)
+```
+
+Alpha diversity analysis
+```{r}
+# Calculate alpha diversities (Shannon)
+alpha.div <- pcoa.otu %>% 
+  log_norm() %>% 
+  t() %>% 
+  vegan::diversity(index = "shannon") %>% 
+  data.frame(AlphaDiv = .) %>% 
+  mutate(SampleID = row.names(.)) %>% 
+  inner_join(map, by = "SampleID") %>% 
+  mutate(Group = paste(Compartment, Treatment, sep = ".")) %>% 
+  mutate(Group = fct_relevel(Group, "BS.Ino", "ES.PC", "ES.Ino")) %>% 
+  mutate(Group = fct_recode(Group, 
+                            "BS" = "BS.Ino",
+                            "ES SI" = "ES.Ino",
+                            "ES SG" = "ES.PC")) %>% 
+  mutate(Group2 = paste(Soil, Group, sep = ".")) %>% 
+  mutate(Group2 = as.factor(Group2))
+
+# Tukey comparisons
+alpha.max <- alpha.div %>% group_by(Soil, Group) %>% summarise(Max = max(AlphaDiv))
+alpha.lm <- lm(AlphaDiv ~ Group2, data = alpha.div)
+alpha.tukey <- multcomp::glht(alpha.lm, linfct = multcomp::mcp(Group2 = "Tukey")) %>% summary()
+alpha.letters <- get_letters(alpha.tukey) %>% 
+  separate(Group, c("Soil", "Group"), sep = "\\.") %>% inner_join(alpha.max, by = c("Soil", "Group"))
+
+# Plot
+b <- alpha.div %>% 
+  ggplot(aes(Group, AlphaDiv, color = Group)) +
+  geom_boxplot(size = 1) +
+  geom_point(size = 2, alpha = 1, shape = 21, color = "gray25", aes(fill = Group)) +
+  geom_text(data = alpha.letters, aes(label = Letter, x = Group, y = Max + 0.25), color = "black") +
+  scale_color_manual(values = c("#6A3D9A", "#FF7F00", "#FDBF6F")) +
+  scale_fill_manual(values = c("#6A3D9A", "#FF7F00", "#FDBF6F")) +
+  xlab("") +
+  ylab("Shannon diversity index") +
+  theme_minimal() +
+  theme(text = element_text(size = 13),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.text = element_text(size = 12, colour = "white"),
+        strip.background = element_rect(fill="gray25"),
+        legend.position = "none") +
+  facet_grid(.  ~ Soil, space = "free", scales = "free")
+
+b
+```
+
+Beta diversity
+```{r}
+# Calculate Bray-Curtis dissimilarities
+dist <- beta_div_dist(pcoa.otu %>% log_norm)
+
+# Get PCoA axes and eigenvalues
+pcoa.axes <- pcoa_axes(dist, pcoa.map)
+pcoa.eigval <- pcoa_eigval(dist, pcoa.map)
+
+# Plot
+c <- pcoa.axes %>% 
+  mutate(Soil = fct_recode(Soil, Arbuckle = "Arb", Biggs = "Big", Davis = "Dav")) %>% 
+  mutate(Group = paste(Compartment, Treatment, sep = ".")) %>% 
+  mutate(Group = fct_relevel(Group, "BS.Ino", "ES.PC", "ES.Ino")) %>% 
+  mutate(Group = fct_recode(Group,
+                            "BS" = "BS.Ino",
+                            "ES SI" = "ES.Ino",
+                            "ES SG" = "ES.PC")) %>%
+  ggplot(aes(Axis.1, Axis.2, color = Group, shape = Soil, fill = Group)) +
+  geom_point(size = 3, alpha = 1, shape = 21, color = "gray25") +
+  xlab(paste("PCo1 (", pcoa.eigval$Eigval[1], "%)", sep = "")) +
+  ylab(paste("PCo2 (", pcoa.eigval$Eigval[2], "%)", sep = "")) +
+  scale_fill_manual(values = c("#6A3D9A", "#FF7F00", "#FDBF6F"), name = "Compartment") +
+  scale_color_manual(values = c("#6A3D9A", "#FF7F00", "#FDBF6F"), guide = F) +
+  theme_bw() +
+  theme(text = element_text(size = 13), 
+        legend.position = c(0.25,0.8),
+        legend.background = element_rect(fill = "white"))
+
+c
+```
+
+Put together
+```{r}
+##1100:400
+
+plot_grid(a,b,c, nrow = 1, align = "hv", axis = "b",
+                 labels = c("A","B", "C"), label_size = 20)
+```
+
+Run PerMANOVA to test the effect of growth setup (hydroponic vs potted) in community composition
+```{r}
+# Subset data
+pman.map <- map %>% 
+  filter(Treatment != "NC")  %>%
+  filter(Compartment == "ES")
+ 
+pman.otu <- otu.ra[,colnames(otu.ra) %in% pman.map$SampleID]
+
+pman.dist <- beta_div_dist(pman.otu %>% log_norm)
+pman.dist <- as.matrix(pman.dist)
+pman.dist <- pman.dist[match(pman.map$SampleID, rownames(pman.dist)),
+                       match(pman.map$SampleID, colnames(pman.dist))]
+
+# Perform PerMANOVA
+pmanova <- adonis(as.dist(pman.dist) ~  Treatment,  data = pman.map)
+
+pmanova
+```
+
+Perform phylum level analysis comparing differences between soil and endosphere communities across soil types (Arbuckle, Biggs, and Davis) and growth setups (hydroponic and potted)
+```{r}
+#Subset data
+acq.map <- pcoa.map %>% 
+  mutate(Group = interaction(Compartment, Treatment, Soil))
+
+# Get phylum level abundances
+phy.otu <- otu %>% 
+  tidy_otu() %>% 
+  inner_join(tax, by = "OTU_ID") %>% 
+  group_by(SampleID, PhyClass) %>% 
+  summarise(Total = sum(Count)) %>% 
+  spread(key = SampleID, value = Total) %>% 
+  as.data.frame() %>% 
+  filter(!is.na(PhyClass))
+  
+# Format
+row.names(phy.otu) <- phy.otu$PhyClass
+phy.otu <- phy.otu[,-1]
+acq.otu <- phy.otu[,colnames(phy.otu) %in% acq.map$SampleID]  
+
+acq.otu <- acq.otu[,match(acq.map$SampleID, colnames(acq.otu))]
+acq.otu <- acq.otu[rowSums(acq.otu)>0,]
+
+# Load into DESeq
+acq.dds <- DESeqDataSetFromMatrix(acq.otu,
+                                colData = acq.map,
+                                design = ~ Group)
+
+acq.dds <- DESeq(acq.dds)
+
+# Run contrasts
+pc.a <- lfcShrink(acq.dds, contrast = c("Group", "BS.Ino.Arbuckle", "ES.PC.Arbuckle")) %>% tidy() %>% mutate(Soil = "Arbuckle", Treatment = "PC")
+pc.b <- lfcShrink(acq.dds, contrast = c("Group", "BS.Ino.Biggs", "ES.PC.Biggs")) %>% tidy() %>% mutate(Soil = "Biggs", Treatment = "PC")
+pc.d <- lfcShrink(acq.dds, contrast = c("Group", "BS.Ino.Davis", "ES.PC.Davis")) %>% tidy() %>% mutate(Soil = "Davis", Treatment = "PC")
+ino.a <- lfcShrink(acq.dds, contrast = c("Group", "BS.Ino.Arbuckle", "ES.Ino.Arbuckle")) %>% tidy() %>% mutate(Soil = "Arbuckle", Treatment = "Ino")
+ino.b <- lfcShrink(acq.dds, contrast = c("Group", "BS.Ino.Biggs", "ES.Ino.Biggs")) %>% tidy() %>% mutate(Soil = "Biggs", Treatment = "Ino")
+ino.d <- lfcShrink(acq.dds, contrast = c("Group", "BS.Ino.Davis", "ES.Ino.Davis")) %>% tidy() %>% mutate(Soil = "Davis", Treatment = "Ino")
+
+# Compile and perform adjustments after pooling all contrasts
+acq.res <- rbind(pc.a, pc.b, pc.d,
+                 ino.a, ino.b, ino.d) %>% 
+  rename(OTU_ID = "gene") %>% 
+  ungroup() %>% 
+  filter(!is.na(p.adjusted)) %>% 
+  mutate(p.adjusted2 = p.adjust(p.value, method = "fdr"))
+
+# Get number of taxa affected
+acq.res %>% 
+  mutate(Assembly = case_when(p.adjusted2 < 0.05 & estimate > 0 ~ "Depleted",
+                              p.adjusted2 < 0.05 & estimate < 0 ~ "Enriched",
+                              p.adjusted2 >= 0.05 | is.na(p.adjusted) ~ "NS")) %>% 
+  group_by(Treatment, Soil, Assembly) %>% 
+  count()
+
+# Generate a matrix with the fold change estimates to perform hierarchical clustering before plotting
+fc.mtx <- acq.res %>% 
+  filter(OTU_ID %in% get_top_taxa(otu.ra, tax, rank = "PhyClass", n = 20)$PhyClass) %>% 
+  mutate(SampleID = paste(Soil, Treatment, sep = ".")) %>% 
+  select(OTU_ID, SampleID, estimate) %>% 
+  spread(key = SampleID, value = estimate) %>% 
+  as.data.frame
+
+# Format fc matrix
+row.names(fc.mtx) <- fc.mtx$OTU_ID
+fc.mtx <- fc.mtx[,-1]
+
+# Run hierarchical clustering
+fc.dist <- dist(as.matrix(fc.mtx)) 
+fc.clust <- hclust(fc.dist, method = "ward.D") 
+fc.ord.names <- fc.clust$labels[fc.clust$order] 
+fc.ord <- data.frame(OTU_ID = fc.ord.names, order = 1:length(fc.ord.names))
+
+
+# Plot
+max.fc <- max(abs(acq.res$estimate))
+d <- acq.res %>% 
+  #filter(OTU_ID %in% get_top_taxa(otu.ra, tax, rank = "PhyClass", n = 20)$PhyClass) %>% 
+  mutate(Treatment = fct_recode(Treatment, 
+                                "ES SI" = "Ino",
+                                "ES SG" = "PC")) %>% 
+  mutate(Treatment = fct_relevel(Treatment,
+                                 "ES SG", "ES SI")) %>% 
+  inner_join(fc.ord, by = "OTU_ID") %>% 
+  ggplot(aes(Treatment, reorder(OTU_ID, order), fill = estimate)) +
+  geom_tile(color = "white", size = 1) +
+  geom_text(aes(label = "*", alpha = p.adjusted < 0.05)) +
+  scale_fill_gradientn(name = "BS vs ES\nlog2FC",
+                       colors = RColorBrewer::brewer.pal(9, "PuOr"),
+                       limits = c(-max.fc, max.fc)) +
+  scale_alpha_manual(values = c(0,1), guide = F) +
+  facet_grid(.~Soil) +
+  theme_minimal() +
+  theme(text = element_text(size = 13),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.text = element_text(size = 13),
+        axis.title = element_blank(),
+        panel.grid = element_blank(),
+        legend.position = "bottom") 
+  
+  
+d
+```
+
+Format data for supplementary table
+```{r}
+supp.table.phy <- acq.res %>% 
+  mutate(Treatment = fct_recode(Treatment, 
+                                "Soil inoculated" = "Ino",
+                                "Soil grown" = "PC")) %>% 
+  mutate(Direction = ifelse(estimate > 0, "Enriched in by BS", "Enriched in ES")) %>% 
+  select(Treatment, Soil, OTU_ID, Direction, baseMean:p.value, p.adjusted2) %>% 
+  rename("log2FoldChange_BSvsES" = "estimate",
+         "p.adjusted" = "p.adjusted2") 
+
+write.table(supp.table.phy, "../Tables/supp.phy.tsv", quote = F, sep = "\t", row.names = F, col.names = T)
+```

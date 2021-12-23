@@ -1,0 +1,234 @@
+Load libraries
+```{r}
+library(cowplot)
+library(tidyverse)
+```
+
+Load DESeq results and annotate identify which genes are part of the core response
+```{r}
+trt.res <- readRDS("../Data/msu_trt_res.RDS") %>% 
+  filter(!is.na(p.adjusted)) %>% 
+  filter(baseMean > 0) %>% 
+  group_by(Tissue) %>% 
+  mutate(p.adjusted2 = p.adjust(p.value, method = "fdr")) %>% 
+  ungroup() %>% 
+  mutate(Direction = case_when(p.adjusted2 >= 0.05 | is.na(p.adjusted2) ~ "NS",
+                               p.adjusted2 < 0.05 & Tissue == "Leaf" & estimate > 0 ~ "L.Up",
+                               p.adjusted2 < 0.05 & Tissue == "Leaf" & estimate < 0 ~ "L.Dn",
+                               p.adjusted2 < 0.05 & Tissue == "Root" & estimate > 0 ~ "R.Up",
+                               p.adjusted2 < 0.05 & Tissue == "Root" & estimate < 0 ~ "R.Dn")) %>% 
+  mutate(Significant = p.adjusted2 < 0.05) %>% 
+  group_by(Tissue, Direction, gene) %>% 
+  mutate(Total = sum(Significant)) %>% 
+  ungroup() %>% 
+  mutate(Core = ifelse(Total == 3, TRUE, FALSE)) %>% 
+  mutate(estimate = ifelse(abs(estimate) > 5, 5*sign(estimate), estimate)) %>% 
+  mutate(Soil = fct_recode(Soil,
+                           "Arbuckle" = "Arb",
+                           "Biggs" = "Big",
+                           "Davis" = "Dav")) %>% 
+  mutate(Tissue = fct_relevel(Tissue, "Root")) 
+
+
+
+```
+
+
+Load LRR annotations and format
+```{r}
+# Load data from 
+lrr <- read.table("../../General/lrr.tsv", header = T, sep = "\t", quote = "", comment.char = "")
+nlr.1 <- filter(lrr, Gene.Fam == "NLR")$ID_MSU %>% unique() %>% as.character()
+
+# Load data from
+nlr.2 <- read.table("../../General/nlr.tsv", header = F)$V1 %>% as.character()
+nlr.2 <- paste("LOC_", nlr.2, sep = "")
+
+# Get all NLRs across the two annotation sources
+nlr <- unique(c(nlr.1, nlr.2))
+nlr %>% length()
+
+# Get RLKs
+rlk <- filter(lrr, Gene.Fam == "LRR-RLK")$ID_MSU %>% unique() %>% as.character()
+
+# Load the Symbol names from the funrice database
+funrice <- read.table("../../General/geneKeyword.table.txt", header = T, sep = "\t", quote = "")
+funrice.ids <- select(funrice, MSU, Symbol) %>% group_by(MSU,Symbol) %>% count %>% ungroup() %>% select(-n)
+
+# Compile 
+rcptr <- rbind(data.frame(gene = nlr, family = "NLR"),
+               data.frame(gene = rlk, family = "LRR-RLK")) %>% 
+  left_join(funrice.ids, by = c("gene" = "MSU"))
+```
+
+Function to perform hypergeometric test
+```{r}
+gene.universe <- trt.res %>% filter(Tissue == "Root") %>% group_by(gene) %>% dplyr::count()
+
+rcptr.cp <- rcptr %>% 
+  right_join(gene.universe, by = "gene") %>% 
+  select(gene, family) %>% 
+  mutate(family = ifelse(is.na(family), "Unannotated", as.character(family))) %>% 
+  mutate(family2 = family)
+
+get_lrr <- function(x){
+  genes <- x$gene
+  res = clusterProfiler::enricher(gene = genes, 
+             universe = gene.universe$gene, 
+             TERM2GENE = select(rcptr.cp, family, gene), 
+             TERM2NAME = select(rcptr.cp, family, family2),
+             pvalueCutoff = 1,
+             qvalueCutoff = 1,
+             minGSSize = 10,
+             maxGSSize = 5000)
+  as.data.frame(res)
+}
+```
+
+Generate a nested data frame and run hypergeometric tests within subsets
+```{r}
+trt.sig <- trt.res %>% 
+  filter(p.adjusted2 < 0.05)
+
+contra.df <- trt.sig %>% 
+  mutate(Direction = ifelse(estimate > 0, "Upregulated", "Downregulated")) 
+
+core.nest <- contra.df %>% 
+  group_by(Tissue, Direction, Soil) %>% 
+  nest() %>% 
+  mutate(hyperG = map(data, get_lrr))
+
+core.nest %>% 
+  unnest(hyperG) %>% 
+  group_by(Tissue) %>% 
+  mutate(p.adjusted2 = p.adjust(pvalue, method = "fdr")) %>% 
+  filter(p.adjusted2 < 0.05) %>% 
+  group_by(Tissue, Direction) %>% 
+  mutate(Rank = rank(pvalue)) %>% 
+  ggplot(aes(reorder(ID, -Rank), -log(p.adjust))) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  facet_grid(Tissue + Direction + Soil ~ ., scales = "free_y")
+```
+
+Generate supplementary table with all DEGs annotated as LRR
+```{r}
+supp.table.lrr <- trt.sig %>% 
+  filter(Tissue == "Root") %>% 
+  mutate(Direction = ifelse(estimate > 0, "Upregulated by MB", "Downregulated by MB")) %>% 
+  group_by(Tissue, Direction, gene) %>% 
+  mutate(n = n()) %>% 
+  ungroup() %>% 
+  mutate(Core = n == 3) %>% 
+  inner_join(rcptr, by = "gene") %>% 
+  select(Tissue, Soil, family, gene, Symbol, Direction, Core, baseMean:p.value, p.adjusted2) %>% 
+  rename("log2FoldChange_SIvsMI" = "estimate",
+         "p.adjusted" = "p.adjusted2") 
+
+write.table(supp.table.lrr, "../Tables/supp.lrr.tsv", quote = F, sep = "\t", row.names = F, col.names = T)
+```
+Check how many LRRs were found within each subset
+```{r}
+supp.table.lrr %>% 
+  group_by(family, Core, Direction, gene) %>% 
+  count() %>% 
+  ungroup() %>% 
+  select(-n) %>% 
+  group_by(family, Direction, Core) %>% 
+  count()
+```
+
+Check LRRs with a known name
+```{r}
+supp.table.lrr %>% 
+  filter(!is.na(Symbol)) %>% 
+  arrange(family, Core, Direction, Symbol) %>% 
+  filter(Core & str_detect(Direction, "Down"))
+```
+
+Plot 
+```{r}
+# Histogram displaying effect size
+lrr.hist.p <- trt.res %>% 
+  inner_join(rcptr, by = "gene") %>% 
+  filter(Significant) %>% 
+  mutate(family = case_when(family == "NLR" ~ "NLR\n(n = 427)",
+                            family == "LRR-RLK" ~ "LRR-RLK\n(n = 303)")) %>% 
+  mutate(family = fct_relevel(family, "NLR\n(n = 427)")) %>% 
+  mutate(Core = ifelse(Core, "Core", as.character(Direction))) %>% 
+  mutate(Core = fct_relevel(Core, "R.Up", "R.Dn", "L.Up", "L.Dn", "Core")) %>% 
+  filter(Tissue == "Root") %>% 
+  ggplot(aes(estimate)) +
+  geom_histogram(aes(fill = Direction, color = Core)) +
+  facet_grid(family ~ Soil, , scales = "free") + 
+  #scale_color_manual(values = c("white", "black")) +
+  scale_fill_manual(values = c("#8C510A","#DFC27D","#4D9221","#B8E186","gray75"),
+                     breaks = c("R.Up", "R.Dn", "L.Up", "L.Dn", "NS"),
+                     guide = F) +
+  scale_color_manual(values = c("#8C510A","#DFC27D","#4D9221","#B8E186","gray15"),
+                     breaks = c("R.Up", "R.Dn", "L.Up", "L.Dn", "Core"),
+                     labels = c("Root genes\nupreg. by MB",
+                                "Root genes\ndownreg. by MB",
+                                "Leaf genes\nupreg. by MB",
+                                "Leaf genes\ndownreg. by MB",
+                                "Core"),
+                     name = "",
+                     drop = F) +
+  xlab("log2 fold change (SI vs MI)") +
+  ylab("Frequency (# genes)") +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        text = element_text(size = 13),
+        strip.text = element_text(size = 10, colour = "white"),
+        strip.background = element_rect(fill="gray25"),
+        legend.position = "bottom")
+
+
+lrr.hist.p
+
+# Data frame for donut plots
+lrr.total <- trt.res %>% 
+  filter(Significant) %>% 
+  inner_join(rcptr, by = "gene") %>% 
+  filter(Tissue == "Root") %>% 
+  group_by(Tissue, Soil, family) %>% 
+  summarise(Total = n()) %>% 
+  mutate(Soil = fct_recode(Soil,
+                           "Arbuckle" = "Arb",
+                           "Biggs" = "Big",
+                           "Davis" = "Dav")) %>% 
+  mutate(Tissue = fct_relevel(Tissue, "Root"))
+
+# Donut plots
+lrr.donut.p <- trt.res %>% 
+  filter(Significant) %>% 
+  inner_join(rcptr, by = "gene") %>% 
+  filter(Tissue == "Root") %>% 
+  group_by(Tissue, Soil, Direction, family) %>% 
+  summarise(Count = n()) %>% 
+  group_by(Tissue, Soil, family) %>% 
+  mutate(Fraction = Count / sum(Count)) %>% 
+  mutate(ymax = cumsum(Fraction),
+         nPhy = n()) %>% 
+  mutate(ymin = c(0, ymax[1:nPhy - 1])) %>% 
+  mutate(ymid = ymin + (ymax -ymin)/2) %>% 
+  mutate(Count2 = ifelse(Direction == "R.Dn", paste(Count,"*", sep = ""), Count)) %>% 
+  ggplot() +
+  geom_rect(aes(ymax=ymax, ymin=ymin, xmax= 4, xmin= 3, fill= Direction)) +
+  geom_text(aes(x = 3.5, y = ymid, label = Count2, color = Direction)) +
+  geom_text(data = lrr.total, aes(2, 0, label = Total), size = 5) +
+  scale_fill_manual(values = c("#8C510A","#DFC27D","#4D9221","#B8E186","gray75"),
+                     breaks = c("R.Up", "R.Dn", "L.Up", "L.Dn", "NS")) +
+  scale_color_manual(values = c("black", "white")) +
+  coord_polar(theta="y") + 
+  xlim(c(2, 4)) +
+  facet_wrap(. ~ family + Soil, nrow = 1) +
+  theme_void() +
+  theme(text = element_text(size = 15),
+        legend.position = "none",
+        legend.title = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_blank())
+
+lrr.donut.p
+```

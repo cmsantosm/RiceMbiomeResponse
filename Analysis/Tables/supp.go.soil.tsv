@@ -1,0 +1,16 @@
+Ontology	GO	Term	Annotated	Significant	Expected	classic	w01
+Biological Process	GO:0009719	response to endogenous stimulus	1086	92	61.96	8.3e-05	8.3e-05
+Biological Process	GO:0006950	response to stress	2679	193	152.84	0.00026	0.00026
+Biological Process	GO:0009607	response to biotic stimulus	786	68	44.84	4e-04	4e-04
+Biological Process	GO:0009628	response to abiotic stimulus	1622	124	92.54	0.00042	0.00042
+Biological Process	GO:0005975	carbohydrate metabolic process	807	68	46.04	0.00081	0.00081
+Biological Process	GO:0008152	metabolic process	10924	668	623.23	0.00229	8.1e-05
+Biological Process	GO:0009606	tropism	66	10	3.77	0.00401	0.00401
+Biological Process	GO:0009056	catabolic process	1189	85	67.83	0.01791	0.01791
+Biological Process	GO:0009991	response to extracellular stimulus	185	17	10.55	0.03583	0.03583
+Biological Process	GO:0016049	cell growth	345	28	19.68	0.03866	0.03866
+Biological Process	GO:0007154	cell communication	1355	88	77.3	0.10893	0.03701
+Molecular Function	GO:0003824	catalytic activity	7610	507	434.09	1.6e-06	0.0169
+Molecular Function	GO:0016787	hydrolase activity	2448	178	139.64	0.00029	7.4e-05
+Molecular Function	GO:0016301	kinase activity	1508	114	86.02	0.00107	0.0011
+Molecular Function	GO:0005488	binding	8229	478	469.4	0.30146	0.0086

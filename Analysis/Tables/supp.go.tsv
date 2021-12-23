@@ -1,0 +1,31 @@
+Tissue	Direction	ID	Description	GeneSet	GeneUniverse	p.val	Annotation
+Leaf	Downregulated	GO:0006810	transport	210	2045	1.02e-05	Biological Process
+Leaf	Downregulated	GO:0009628	response to abiotic stimulus	169	1761	0.003876	Biological Process
+Leaf	Downregulated	GO:0009058	biosynthetic process	359	4460	0.002091	Biological Process
+Leaf	Downregulated	GO:0009987	cellular process	857	11272	9.588e-06	Biological Process
+Leaf	Upregulated	GO:0006464	cellular protein modification process	198	2463	0.00068	Biological Process
+Root	Downregulated	GO:0006950	response to stress	313	2934	2.108e-05	Biological Process
+Root	Downregulated	GO:0019748	secondary metabolic process	60	375	2.448e-05	Biological Process
+Root	Downregulated	GO:0009628	response to abiotic stimulus	197	1761	0.00015096	Biological Process
+Root	Downregulated	GO:0006464	cellular protein modification process	258	2463	0.000578	Biological Process
+Root	Downregulated	GO:0009987	cellular process	992	11272	4.488e-06	Biological Process
+Root	Downregulated	GO:0006810	transport	208	2045	0.0177771428571429	Biological Process
+Root	Downregulated	GO:0019725	cellular homeostasis	32	214	0.01836	Biological Process
+Root	Upregulated	GO:0009719	response to endogenous stimulus	146	1203	5.202e-06	Biological Process
+Root	Upregulated	GO:0007165	signal transduction	125	1233	0.0362666666666667	Biological Process
+Leaf	Downregulated	GO:0005215	transporter activity	150	1267	1.184e-07	Molecular Function
+Leaf	Downregulated	GO:0003700	DNA-binding transcription factor activit...	143	1413	0.000814	Molecular Function
+Leaf	Downregulated	GO:0016787	hydrolase activity	228	2606	0.00718857142857143	Molecular Function
+Leaf	Upregulated	GO:0003723	RNA binding	60	591	0.000814	Molecular Function
+Leaf	Upregulated	GO:0005515	protein binding	230	3004	0.0012395	Molecular Function
+Leaf	Upregulated	GO:0016301	kinase activity	136	1680	0.004144	Molecular Function
+Leaf	Upregulated	GO:0000166	nucleotide binding	164	2201	0.02627	Molecular Function
+Leaf	Upregulated	GO:0003824	catalytic activity	546	8292	0.00718857142857143	Molecular Function
+Root	Downregulated	GO:0016740	transferase activity	367	3274	0.000246666666666667	Molecular Function
+Root	Downregulated	GO:0000166	nucleotide binding	254	2201	1.702e-06	Molecular Function
+Root	Downregulated	GO:0003824	catalytic activity	795	8292	0.011988	Molecular Function
+Root	Downregulated	GO:0016301	kinase activity	192	1680	0.0001073	Molecular Function
+Root	Downregulated	GO:0005215	transporter activity	141	1267	0.00407	Molecular Function
+Root	Downregulated	GO:0005515	protein binding	290	3004	0.0268514285714286	Molecular Function
+Root	Upregulated	GO:0003700	DNA-binding transcription factor activit...	142	1413	0.0148	Molecular Function
+Root	Upregulated	GO:0005215	transporter activity	125	1267	0.039775	Molecular Function
