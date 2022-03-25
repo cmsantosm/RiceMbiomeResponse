@@ -29,7 +29,7 @@ trt.sig <- trt.res %>%
   filter(p.adjusted2 < 0.05)
 
 contra.df <- trt.sig %>% 
-    mutate(Direction = ifelse(estimate > 0, "Upregulated", "Downregulated")) %>% 
+  mutate(Direction = ifelse(estimate > 0, "Upregulated", "Downregulated")) %>% 
   group_by(Tissue, Direction, gene) %>% 
   dplyr::count() %>% 
   filter(n == 3)

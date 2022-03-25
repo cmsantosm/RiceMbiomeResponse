@@ -1,0 +1,390 @@
+Load libraries
+```{r}
+library(biobroom)
+library(cowplot)
+library(RColorBrewer)
+library(tidyverse)
+source("../../General/rmb_functions.R")
+source("../../General/parameters.R")
+```
+
+Load data
+```{r}
+#Mapping files
+mb.map <- readRDS("../Data/GNOTO_MB_map.RDS") %>% filter(Compartment == "ES", Treatment == "Ino")
+rn.map <- readRDS("../Data/RNASeq_map.RDS") %>% filter(Tissue == "Root" & Treatment == "Ino")
+
+#Z-transformed matrices
+mb.mtx <- readRDS("../Data/zscore_otu_mtx.RDS")
+rn.mtx <- readRDS("../Data/zscore_gene_mtx.RDS")
+
+#Clustering results
+mb.clust <- readRDS("../Data/otu_clusters.RDS")
+rn.clust <- readRDS("../Data/gene_clusters.RDS")
+
+#Taxonomy
+tax <- readRDS("../Data/SILVAcr_tax.RDS")
+
+#OTU table
+otu <- readRDS("../Data/SILVAcr_otu.RDS")
+otu <- otu[rowSums(otu) > 0.05*ncol(otu),]
+otu <- otu[,colnames(otu) %in% colnames(mb.mtx)]
+
+#Core microbiome IDs
+core.ids <- readRDS("../Data/core_otu_ids.RDS")
+```
+
+Perform single value decomposition on microbiome clusters
+```{r}
+#Generate lists to hold results
+mb.svd.var.list <- list()
+mb.svd.vec.list <- list()
+
+#Perform SVD
+for(cluster.id in mb.clust$Cluster %>% unique()){
+  cluster.members <- filter(mb.clust, Cluster == cluster.id)$OTU_ID
+  cluster.mtx <- mb.mtx[match(cluster.members, row.names(mb.mtx)),]
+  svd(cluster.mtx)
+  mb.svd.var.list[[cluster.id]] <- svd(cluster.mtx)$d^2/sum(svd(cluster.mtx)$d^2)
+  mb.svd.vec.list[[cluster.id]] <-svd(cluster.mtx)$v
+}
+
+#Recover variance results and reformat
+mb.svd.var.df <- plyr::ldply(mb.svd.var.list, function(x) x)
+names(mb.svd.var.df) <- c("Cluster", paste("SVD", 1:(ncol(mb.svd.var.df) - 1), sep = ""))
+mb.svd.var.df <- mb.svd.var.df %>% 
+  gather(key = "SVD", value = "Variance", -Cluster) %>% 
+  mutate(Variance = Variance * 100) 
+
+#Recover singular vectors and reformat
+mb.svd.vec.df <- plyr::ldply(mb.svd.vec.list, function(x) x)
+names(mb.svd.vec.df) <- c("Cluster", paste("SVD", 1:(ncol(mb.svd.vec.df) - 1), sep = ""))
+mb.svd.vec.df$SampleID <- colnames(mb.mtx)
+mb.svd.vec.df <- mb.svd.vec.df %>% 
+  gather(key = "SVD", value = "Score", -SampleID, -Cluster) %>% 
+  inner_join(mb.map, by = "SampleID") %>% 
+  inner_join(mb.svd.var.df, by = c("Cluster", "SVD"))
+```
+
+Perform single value decomposition on RNASeq clusters
+```{r}
+#Generate lists to hold results
+rn.svd.var.list <- list()
+rn.svd.vec.list <- list()
+
+#Perform SVD
+for(cluster.id in rn.clust$Cluster %>% unique()){
+  cluster.members <- filter(rn.clust, Cluster == cluster.id)$gene
+  cluster.mtx <- rn.mtx[match(cluster.members, row.names(rn.mtx)),]
+  svd(cluster.mtx)
+  rn.svd.var.list[[cluster.id]] <- svd(cluster.mtx)$d^2/sum(svd(cluster.mtx)$d^2)
+  rn.svd.vec.list[[cluster.id]] <-svd(cluster.mtx)$v
+}
+
+#Recover variance results and reformat
+rn.svd.var.df <- plyr::ldply(rn.svd.var.list, function(x) x)
+names(rn.svd.var.df) <- c("Cluster", paste("SVD", 1:(ncol(rn.svd.var.df) - 1), sep = ""))
+rn.svd.var.df <- rn.svd.var.df %>% 
+  gather(key = "SVD", value = "Variance", -Cluster) %>% 
+  mutate(Variance = Variance * 100) 
+
+#Recover singular vectors and reformat
+rn.svd.vec.df <- plyr::ldply(rn.svd.vec.list, function(x) x)
+names(rn.svd.vec.df) <- c("Cluster", paste("SVD", 1:(ncol(rn.svd.vec.df) - 1), sep = ""))
+rn.svd.vec.df$SampleID <- colnames(rn.mtx)
+rn.svd.vec.df <- rn.svd.vec.df %>% 
+  gather(key = "SVD", value = "Score", -SampleID, -Cluster) %>% 
+  inner_join(rn.map, by = "SampleID") %>% 
+  inner_join(rn.svd.var.df, by = c("Cluster", "SVD"))
+```
+
+Reformat and explore correlations
+```{r}
+#Reformat RNA SVD results
+rn.svd.tidy <- rn.svd.vec.df %>% 
+  filter(SVD %in% paste("SVD", 1:1, sep = "")) %>% 
+  dplyr::rename("RnaSampleID" = "SampleID") %>% 
+  dplyr::select(RnaSampleID, Cluster, SVD, Score, Soil, Container) %>% 
+  dplyr::rename("RnaCluster" = "Cluster",
+                "RnaScore" = "Score",
+                "RnaSVD" = "SVD")
+
+#Reformat 16 SVD results
+mb.svd.tidy <- mb.svd.vec.df %>%
+  filter(SVD %in% paste("SVD", 1:1, sep = "")) %>% 
+  dplyr::rename("MbSampleID" = "SampleID") %>% 
+  dplyr::select(MbSampleID, Cluster, SVD, Score, Container) %>% 
+  dplyr::rename("MbCluster" = "Cluster",
+                "MbScore" = "Score",
+                "MbSVD" = "SVD")
+
+#merge
+svd.master <- rn.svd.tidy %>% inner_join(mb.svd.tidy, by = "Container") %>% 
+  mutate(Group = paste(RnaCluster, MbCluster, RnaSVD, MbSVD)) 
+
+#Plot correlations
+svd.master %>% 
+  ggplot(aes(RnaScore, MbScore)) +
+  geom_point(aes(shape = Soil, fill = Soil)) +
+  geom_smooth(method = "lm", color = "black") +
+  facet_wrap(~Group, scales = "free") +
+  scale_fill_brewer(palette = "Set2",
+                    guide = guide_legend(title.hjust = 0.5, title.position = "top", ncol = 1)) +
+  scale_shape_manual(name = "", values = c(21,22,24),
+                     guide = guide_legend(title.hjust = 0.5, title.position = "top", nrow = 1)) 
+```
+
+Test correlations
+```{r}
+run_cor_svd <- function(df){
+  rbind(cor.test(df$RnaScore, df$MbScore, alternative = "two.sided", method = "pearson") %>% tidy())
+}
+
+svd.master %>% 
+  group_by(Group) %>% 
+  nest() %>% 
+  mutate(Correlation = map(data, run_cor_svd)) %>% 
+  unnest(Correlation) %>% 
+  ungroup() %>% 
+  mutate(p.adj = p.adjust(p.value, method = "fdr")) %>% 
+  filter(p.adj < .05) %>% 
+  dplyr::select(Group, p.adj) %>% 
+  arrange(p.adj)
+```
+
+The two most significant correlations involved OTU Module 2. Generate figure with correlation patterns
+```{r}
+#Subset SVD results
+mb.svd.var.1 <- filter(mb.svd.var.df, SVD == "SVD1")
+rn.svd.var.1 <- filter(rn.svd.var.df, SVD == "SVD1")
+
+#Plot correlation with gene module 1
+svd.p1 <- svd.master %>% 
+  filter(Group =="Gene Module 1 OTU Module 2 SVD1 SVD1") %>% 
+  ggplot(aes(MbScore, RnaScore)) +
+  geom_point(aes(shape = Soil, fill = Soil)) +
+  geom_smooth(method = "lm", color = "black", se = F) +
+  scale_fill_brewer(name = "Soil", palette = "Set2",
+                    guide = guide_legend(title.hjust = 0.5, title.position = "top", nrow = 1)) +
+  scale_shape_manual(name = "Soil", values = c(21,22,24),
+                     guide = guide_legend(title.hjust = 0.5, title.position = "top", nrow = 1)) +
+  xlab(paste("OTU Module 2\nSV1 (", round(filter(mb.svd.var.1, Cluster == "OTU Module 2")$Variance, 1), "%)", sep = "")) +
+  ylab(paste("Gene Module 1\nSV1 (", round(filter(rn.svd.var.1, Cluster == "Gene Module 1")$Variance, 1), "%)", sep = "")) +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        legend.position = "none")
+
+#Plot correlation with gene module 1. Note that we switched the direction of the scores for visualization purposes so it fits the opposite trends displayed by the heatmap.
+svd.p2 <- svd.master %>% 
+  mutate(Soil = fct_recode(Soil,
+                           "Arbuckle" = "Arb", 
+                           "Biggs" = "Big",
+                           "Davis" = "Dav")) %>% 
+  mutate(RnaScore = -RnaScore) %>% 
+  filter(Group =="Gene Module 2 OTU Module 2 SVD1 SVD1") %>% 
+  ggplot(aes(MbScore, RnaScore)) +
+  geom_point(aes(shape = Soil, fill = Soil)) +
+  geom_smooth(method = "lm", color = "black", se = F) +
+  scale_fill_brewer(name = "Soil", palette = "Set2",
+                    guide = guide_legend(title.hjust = 0.5, title.position = "top", nrow = 3)) +
+  scale_shape_manual(name = "Soil", values = c(21,22,24),
+                     guide = guide_legend(title.hjust = 0.5, title.position = "top", nrow = 3)) +
+  xlab(paste("OTU Module 2\nSV1 (", round(filter(mb.svd.var.1, Cluster == "OTU Module 2")$Variance, 1), "%)", sep = "")) +
+  ylab(paste("Gene Module 2\nSV1 (", round(filter(rn.svd.var.1, Cluster == "Gene Module 2")$Variance, 1), "%)", sep = "")) +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        legend.position = "none")
+
+
+svd.p <- plot_grid(get_legend(svd.p2 + theme(legend.position = "top", text = element_text(size = 13))), svd.p1, svd.p2, 
+                   nrow = 3, rel_heights = c(2, 3.5, 3.5), labels = c(NA, "(c)", NA), label_size = 15)
+svd.p
+```
+
+Perform correlation analyses between OTU-gene pairs
+```{r}
+#Generate mapping file linking 16S and RNASeq samples
+pairs.map <- mb.map %>% 
+  dplyr::rename("MbSampleID" = "SampleID") %>% 
+  inner_join(dplyr::select(rn.map, SampleID, Container), by = "Container") %>% 
+  dplyr::rename("RnSampleID" = "SampleID") %>% 
+  group_by(MbSampleID, RnSampleID, Container, Soil) %>% 
+  dplyr::count() %>% 
+  ungroup() %>% 
+  dplyr::select(-n)
+
+#Reformat z-transformed OTU matrix
+mb.tidy <- mb.mtx %>% 
+  tidy_otu() %>% 
+  dplyr::rename("Abundance" = "Count") %>% 
+  dplyr::rename("MbSampleID" = "SampleID")
+
+#Reformat z-transformed gene matrix
+rn.tidy <- rn.mtx %>% 
+  tidy_otu() %>% 
+  dplyr::rename("Expression" = "Count") %>% 
+  dplyr::rename("RnSampleID" = "SampleID") %>% 
+  dplyr::rename("gene" = "OTU_ID")
+
+#Merge z-transformed OTU and gene data
+pairs.tidy <- mb.tidy %>% 
+  inner_join(pairs.map, by = "MbSampleID") %>% 
+  inner_join(rn.tidy, by ="RnSampleID") %>% 
+  left_join(dplyr::select(mb.clust, OTU_ID, Cluster, Core)) %>% 
+  dplyr::rename("MbCluster" = "Cluster") %>% 
+  left_join(dplyr::select(rn.clust, gene, Cluster, family, Symbol)) %>% 
+  dplyr::rename("RnCluster" = "Cluster")
+
+#Filter pairs that only include OTUs from Module 2
+pairs.filt <- pairs.tidy %>% 
+  filter(MbCluster == "OTU Module 2") 
+
+#Run correlations
+run_cor_pairs <- function(df){
+  rbind(cor.test(df$Expression, df$Abundance, alternative = "two.sided", method = "pearson") %>% tidy())
+}
+
+pairs.res <- pairs.filt %>% 
+  group_by(MbCluster, OTU_ID, RnCluster, gene) %>% 
+  nest() %>% 
+  mutate(Correlation = map(data, run_cor_pairs)) %>% 
+  unnest(Correlation) %>% 
+  ungroup() %>% 
+  mutate(p.adj = p.adjust(p.value, method = "fdr"))
+
+#How many significant correlations involved a core OTU
+pairs.res %>% 
+  filter(p.adj < 0.05) %>% 
+  mutate(Core = OTU_ID %in% core.ids) %>% 
+  group_by(Core) %>% 
+  dplyr::count()
+```
+
+Explore OTUs with significant correlations
+```{r}
+#How many OTUs
+pairs.res %>% 
+  filter(p.adj < 0.05) %>% 
+  group_by(OTU_ID) %>% 
+  dplyr::count() %>% 
+  arrange(-n)
+
+#Filter the top 10 with the most correlations
+pairs.sig <- pairs.res %>% 
+  filter(p.adj < 0.05) %>% 
+  group_by(OTU_ID, MbCluster, RnCluster) %>% 
+  summarise(nCluster = n()) %>% 
+  group_by(OTU_ID) %>% 
+  mutate(Total = sum(nCluster)) %>% 
+  ungroup() %>% 
+  mutate(Rank = rank(-Total)) %>% 
+  arrange(-Total) %>% 
+  filter(Rank < 21) %>% 
+  inner_join(tax, by = "OTU_ID")
+
+#How many phyla are covered by the top 10 OTUs
+pairs.sig %>% 
+  group_by(Phylum) %>% 
+  dplyr::count()
+
+#Plot the top 10 OTUs
+pairs.cor.p <- pairs.sig %>% 
+  mutate(Core = OTU_ID %in% core.ids) %>% 
+  mutate(Taxonomy = ifelse(Core,
+                           paste("*", OTU_ID, sep = " "),OTU_ID)) %>% 
+  ggplot(aes(reorder(Taxonomy, -Rank), nCluster, fill = RnCluster)) +
+  geom_bar(stat = "identity") +
+  #scale_fill_manual(name = "", values = brewer.pal(11, "Reds")[c(7,4)]) +
+  scale_fill_manual(name = "", values = brewer.pal(11, "Set2")[c(4,6)]) +
+  guides(fill = guide_legend(nrow = 2)) +
+  #coord_flip() +
+  xlab("OTU") +
+  ylab("Number of significant correlations\nwith a differentially expressed gene") +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  #theme(legend.position = c(0.75,0.25))
+  theme(legend.position = "bottom")
+
+pairs.cor.p
+pairs.ab.p
+```
+
+Explore LRRs that were part of significant correlations
+```{r}
+#Subset correlation results and rank LRRs based on how many significant correlations they were part of
+pairs.ranks <- pairs.res %>% 
+  filter(p.adj < 0.05) %>% 
+  inner_join(rcptr, by = "gene") %>% 
+  group_by(gene, family) %>% 
+  summarise(Total = n()) %>% 
+  group_by(family) %>% 
+  mutate(Rank = rank(-Total, ties.method = "first")) %>% 
+  ungroup() %>% 
+  dplyr::select(gene, Rank)
+
+
+#Plot top 10 LRRs highlighting how many correlations involved a coreOTU
+lrr.p <- pairs.res %>% 
+  filter(p.adj < 0.05) %>% 
+  inner_join(rcptr, by = "gene") %>% 
+  group_by(gene) %>% 
+  mutate(Total = n()) %>% 
+  inner_join(pairs.ranks, by = "gene") %>% 
+  filter(Rank < 11) %>% 
+  mutate(Core = ifelse(OTU_ID %in% core.ids, "Core OTU", "Non-core OTU")) %>% 
+  mutate(family = fct_relevel(family, "LRR-RLK")) %>% 
+  ggplot(aes(reorder(gene, Total), fill = Core)) +
+  geom_bar() +
+  facet_grid(. ~ family, scales = "free", space = "free") +
+  scale_fill_manual(name = "", values = rcartocolor::carto_pal(8, "Bold")[c(3,6)]) +
+  guides(fill = guide_legend(nrow = 3)) +
+  ylab("Number of significant correlations\nwith a differentially abundant OTU") +
+  xlab("Gene") +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.text = element_text(size = 9, colour = "white"),
+        strip.background = element_rect(fill="gray25"),
+        axis.ticks = element_blank()) +
+  theme(legend.position = "bottom")
+
+lrr.p
+
+#How many correlations in the top 10 LRRs involved a core TU
+pairs.res %>% 
+  filter(p.adj < 0.05) %>% 
+  inner_join(rcptr, by = "gene") %>% 
+  group_by(gene) %>% 
+  mutate(Total = n()) %>% 
+  inner_join(pairs.ranks, by = "gene") %>% 
+  filter(Rank < 11) %>% 
+  mutate(Core = OTU_ID %in% core.ids) %>% 
+  group_by(Core) %>% 
+  dplyr::count()
+```
+
+Put it all together. Make sure that the OTU and gene dendrograms from the other 2 notebooks are loaded.
+```{r}
+top <- plot_grid(rn.dendro.p, mb.dendro.p, svd.p, ncol = 3, labels = c("(a)", "(b)", NA), label_size = 15)
+right  <- plot_grid(pairs.cor.p, lrr.p, ncol = 2, align = "h", axis = "tb", rel_widths = c(2,3.5), labels = c("(d)", "(e)"), label_size = 15)
+
+##733:983
+plot_grid(top, right, nrow = 2, rel_heights = c(1.25,1))
+```
+
+Generate supplementary table
+```{r}
+supp.table.cor <- pairs.res %>% 
+  filter(p.adj < 0.05) %>% 
+  dplyr::select(-data, -parameter, -conf.low, -conf.high, -method, -alternative) %>% 
+  dplyr::rename("OTU_Module" = "MbCluster",
+                "Gene_Module" = "RnCluster") %>% 
+  group_by(OTU_ID) %>% 
+  mutate(Total = n()) %>% 
+  arrange(-Total) %>% 
+  dplyr::select(-Total)
+
+write.table(supp.table.cor, "../Tables/supp.gene.otu.cor.tsv", quote = F, sep = "\t", row.names = F, col.names = T)  
+```
+

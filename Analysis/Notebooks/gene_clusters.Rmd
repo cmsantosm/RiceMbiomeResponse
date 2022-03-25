@@ -1,0 +1,480 @@
+Load libraries
+```{r}
+library(topGO)
+library(DESeq2)
+library(biobroom)
+library(ggdendro)
+library(cowplot)
+library(RColorBrewer)
+library(tidyverse)
+source("../../General/rmb_functions.R")
+source("../../General/parameters.R")
+```
+
+Load data and reformat
+```{r}
+#Mapping file
+map <- readRDS("../Data/RNASeq_map.RDS") %>% filter(Tissue == "Root" & Treatment == "Ino")
+
+#Generate count tables from DESeq object
+dds <- readRDS("../Data/msu_dds.RDS")
+vsd <- vst(dds, blind = TRUE)
+counts <- assay(vsd)
+
+#Load DESeq results
+soil.res <- readRDS("../Data/msu_soil_res.RDS") %>%
+  filter(!is.na(p.adjusted))
+
+# Subset the root soil inoculated samples
+sig <- soil.res %>%
+  filter(Tissue == "Root") %>% 
+  filter(Treatment == "Ino") %>%
+  filter(p.adjusted < 0.05)
+```
+
+
+Retrieve LRR annotations
+```{r}
+# Load data from database 1
+lrr <- read.table("../../General/lrr.tsv", header = T, sep = "\t", quote = "", comment.char = "")
+nlr.1 <- filter(lrr, Gene.Fam == "NLR")$ID_MSU %>% unique() %>% as.character()
+
+# Load data from database 2
+nlr.2 <- read.table("../../General/nlr.tsv", header = F)$V1 %>% as.character()
+nlr.2 <- paste("LOC_", nlr.2, sep = "")
+
+# Get all NLRs across the two annotation sources
+nlr <- unique(c(nlr.1, nlr.2))
+nlr %>% length()
+
+# Get RLKs
+rlk <- filter(lrr, Gene.Fam == "LRR-RLK")$ID_MSU %>% unique() %>% as.character()
+
+# Load the Symbol names from the funrice database
+funrice <- read.table("../../General/geneKeyword.table.txt", header = T, sep = "\t", quote = "")
+funrice.ids <- dplyr::select(funrice, MSU, Symbol) %>% group_by(MSU,Symbol) %>% dplyr::count() %>% ungroup() %>% dplyr::select(-n)
+
+# Compile 
+rcptr <- rbind(data.frame(gene = nlr, family = "NLR"),
+               data.frame(gene = rlk, family = "LRR-RLK")) %>% 
+  left_join(funrice.ids, by = c("gene" = "MSU"))
+```
+
+Z-transform gene counts to peform hierarchical clustering
+```{r}
+#Z-transformation
+zs.tidy <- counts %>%
+  tidy_otu() %>% 
+  dplyr::rename("gene" = "OTU_ID") %>% 
+  inner_join(dplyr::select(map, SampleID, Tissue, Treatment, Soil), by = "SampleID") %>% 
+  filter(!is.na(Count)) %>% 
+  filter(gene %in% sig$gene) %>% 
+  group_by(Treatment,gene) %>% 
+  mutate(zscore = (Count - mean(Count))/sd(Count)) %>% 
+  ungroup() 
+
+# Create a matrix to run hierarchical clustering
+zs.mtx <- zs.tidy %>% 
+    dplyr::select(gene, SampleID, zscore) %>% 
+    spread(key = SampleID, value = zscore)
+zs.mtx <- as.data.frame(zs.mtx) 
+rownames(zs.mtx) <- zs.mtx$gene
+zs.mtx <- zs.mtx[,-1] 
+
+saveRDS(zs.mtx, "../Data/zscore_gene_mtx.RDS")
+```
+
+Evaluate the optimal number of clusters 
+```{r}
+m <- c( "average", "single", "complete", "ward")
+names(m) <- c( "average", "single", "complete", "ward")
+
+# See what values of k might be worth testing
+factoextra::fviz_nbclust(zs.mtx, FUN = factoextra::hcut, method = "wss")
+# See which method gets you the best clustering
+ac <- function(x) {
+  cluster::agnes(zs.mtx, method = x)$ac
+}
+map_dbl(m, ac)
+```
+
+Perform hierarchical clustering
+```{r}
+#Define clustering method and number of clusters
+cluster.method <- "average"
+n.clust <- 2
+
+#Run hierarchical clustering on genes and recover clusters and relative order for plotting
+dist <- dist(as.matrix(zs.mtx)) 
+clust <- hclust(dist, method = cluster.method) 
+ord.names <- clust$labels[clust$order] 
+
+ord <- data.frame(gene = ord.names, order = 1:length(ord.names))
+sig.cut <- cutree(clust[c(1,2,4)], k = n.clust)
+ord$Cluster <- as.factor(sig.cut[ord$gene])
+
+# Generate a data frame with the order of each gene based on the hierarchical clustering analysis
+ord <- ord %>% 
+  mutate(Cluster = paste("Gene Module ", Cluster, sep = "")) %>% 
+  group_by(Cluster) %>% 
+  mutate(nOTU = n()) %>% 
+  ungroup() %>% 
+  mutate(Cluster2 = paste(Cluster, "\n(", nOTU, " genes)", sep = "")) %>% 
+  left_join(rcptr, by = "gene")
+
+# Save clustering results
+saveRDS(ord, "../Data/gene_clusters.RDS")
+
+### Peform hierarchical clustering on the samples
+sample.dist <- dist(t(as.matrix(zs.mtx))) 
+sample.clust <- hclust(sample.dist, method = cluster.method) 
+sample.ord.names <- sample.clust$labels[sample.clust$order] 
+sample.ord <- data.frame(SampleID = sample.ord.names, SampleOrder = 1:length(sample.ord.names))
+
+#Retrieve dendrogram data for plotting
+dd.row <- as.dendrogram(sample.clust)
+ddata_x <- dendro_data(dd.row)
+
+labs <- label(ddata_x) %>% 
+  inner_join(map, by = c("label" = "SampleID")) 
+
+#Plot dendorgram
+dendro <- ggplot(segment(ddata_x)) +
+  geom_segment(aes(x=x, y=y, xend=xend, yend=yend)) + 
+  geom_point(data= labs,
+             aes(x=x, y=5, shape = Soil, fill = Soil), size = 2, stroke = 1) +
+  scale_fill_brewer(palette = "Set2",
+                    guide = guide_legend(title.hjust = 0.5, title.position = "top", ncol = 1)) +
+  scale_shape_manual(name = "", values = c(21,22,24),
+                     guide = guide_legend(title.hjust = 0.5, title.position = "top", nrow = 1)) +
+  theme_classic() +
+  theme(text = element_text(size = 13),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        legend.position = "top") 
+
+#Generate data frame with z-scores and order info
+master <- inner_join(zs.tidy, ord, by = "gene") %>% 
+  inner_join(sample.ord, by = "SampleID")
+
+# Plot mean abundances in a heatmap
+hm <- master %>% 
+  mutate(zscore = ifelse(zscore > 2, 2, zscore)) %>% 
+  ggplot(aes(reorder(paste(Soil,SampleID), SampleOrder), reorder(gene, order), fill = zscore)) +
+  geom_tile() +
+  scale_fill_distiller(palette = "Greys", direction = 1,
+                       name = "Expression\nin SI roots\n(z-score)",
+                       guide = guide_colorbar(title.hjust = 1, title.position = "left"),
+                       limits = c(-2,2)) +
+  ylab("Differentially expressed gene") +
+  xlab("") +
+  facet_grid(Cluster2 ~ ., scales = "free", space = "free") +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        axis.text = element_blank(),
+        axis.title.x = element_blank(), 
+        axis.ticks = element_blank(),
+        axis.line.y = element_blank(),
+        panel.grid = element_blank(),
+        strip.text = element_text(size = 9, colour = "white"),
+        strip.background = element_rect(fill="gray25"),
+        legend.position = "bottom")
+
+rn.dendro.p <- cowplot::plot_grid(dendro + theme(legend.position = "none"), hm, ncol = 1, align = "v", axis = "lr", rel_heights = c(2,7))
+```
+Generate supplementary table
+```{r}
+supp.table.deg.soil <- sig %>% 
+  inner_join(dplyr::select(ord, gene, Cluster, family), by = "gene") %>% 
+  dplyr::select(Cluster, gene, everything()) %>% 
+  dplyr::select(-Tissue, -Treatment) %>% 
+  dplyr::rename("ReceptorFamily" = "family") %>% 
+  arrange(Cluster, gene)
+
+supp.table.deg.soil %>% 
+  group_by(ReceptorFamily) %>% 
+  dplyr::count()
+
+write.table(supp.table.deg.soil, "../Tables/supp.deg.soil.tsv", quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+Load data for GO enrichment analysis
+```{r}
+go.defs <- readRDS("../Data/go_defs.rds")
+go.topgo <- readRDS("../Data/msu_topgo.RDS")
+```
+
+Create GOdata object
+```{r}
+assayed.genes <- soil.res %>% filter(Tissue == "Root" & Treatment == "Ino") %>% .$gene
+
+tmp.sig.genes <- sample(assayed.genes, 100)
+tmp.gene.vec <- as.integer(assayed.genes %in% tmp.sig.genes)
+names(tmp.gene.vec) <- assayed.genes
+
+GOdata.BP <- new("topGOdata",
+                description = "test",
+                ontology = "BP",
+                allGenes = as.factor(tmp.gene.vec),
+                annot = annFUN.gene2GO,
+                gene2GO = go.topgo,
+                nodeSize = 10)
+
+GOdata.MF <- new("topGOdata",
+                description = "test",
+                ontology = "MF",
+                allGenes = as.factor(tmp.gene.vec),
+                annot = annFUN.gene2GO,
+                gene2GO = go.topgo,
+                nodeSize = 10)
+
+```
+
+Make function to run topGO pipeline
+```{r}
+run_topgo <- function(df, GOdata){
+  sig.genes <- df$gene
+  gene.vec <- as.integer(assayed.genes %in% sig.genes)
+  names(gene.vec) <- assayed.genes
+
+  GOdata <- updateGenes(GOdata, as.factor(gene.vec))
+
+  classic <- runTest(GOdata, algorithm = "classic", statistic = "fisher") 
+  w01 <- runTest(GOdata, algorithm = "weight01", statistic = "fisher")
+  
+  GenTable(
+    GOdata,
+    classic = classic,
+    w01 = w01,
+    orderBy = "classic",
+    ranksOf = "classic",
+    topNodes = length(usedGO(GOdata))
+    ) %>%
+    mutate(classic = as.numeric(classic),
+    w01 = as.numeric(w01)) %>% 
+    dplyr::rename("GO" = "GO.ID")
+} 
+```
+
+Nest and run 
+```{r}
+cluster.nest <- ord %>% 
+  group_by(Cluster) %>% 
+  nest()
+
+cluster.nest <- cluster.nest %>% 
+  dplyr::mutate(GO_BP = map(data, run_topgo, GOdata.BP),
+         GO_MF = map(data, run_topgo, GOdata.MF))
+```
+
+Unnest and compile results
+```{r}
+go.res.bp <- cluster.nest %>% 
+  unnest(GO_BP) %>% 
+  mutate(Ontology = "Biological Process")
+
+go.res.mf <- cluster.nest %>% 
+  unnest(GO_MF) %>% 
+  mutate(Ontology = "Molecular Function")
+
+go.res <- rbind(go.res.bp, go.res.mf)
+```
+
+Plot GO results
+```{r}
+soil.go <- go.res %>% 
+  ungroup() %>% 
+  filter(w01 < 0.05) %>% 
+  mutate(Ontology = fct_recode(Ontology, 
+                               "Biological\nProcess" = "Biological Process",
+                               "Molecular\nFunction" = "Molecular Function")) %>% 
+  ggplot(aes(reorder(Term, -log10(w01)), -log10(w01))) +
+  geom_bar(stat = "identity") +
+  ylab("-log10 p-value") +
+  xlab("") +
+  facet_grid(Ontology + Cluster ~ ., scale = "free", space = "free") +
+  coord_flip() +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
+        text = element_text(size = 10),
+        strip.text = element_text(size = 9, colour = "white"),
+        strip.background = element_rect(fill = "gray25"),
+        legend.position = "top") 
+
+soil.go
+```
+
+Generate supplementary table with GO results
+```{r}
+supp.table.go.soil <- go.res %>% 
+  ungroup() %>% 
+  filter(w01 < 0.05) %>% 
+  dplyr::select(-data, -GO_MF, -GO_BP) %>% 
+  dplyr::select(Ontology, everything()) %>% 
+  dplyr::select(-classic) %>% 
+  dplyr::rename("ID" = "GO",
+         "Description" = "Term",
+         "GeneSet" = "Significant",
+         "GeneUniverse" = "Annotated",
+         "p.adjusted" = "w01",
+         "Annotation" = "Ontology") %>% 
+  arrange(Annotation, Cluster)
+
+write.table(supp.table.go.soil, "../Tables/supp.go.soil.tsv", quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+
+Generate supplementary figure with gene patterns across SI and MI roots
+```{r}
+#Subset mapping file to include all root samples
+map.root <- readRDS("../Data/RNASeq_map.RDS") %>% filter(Tissue == "Root")
+
+#Z-transform including all root samples
+zs.tidy.root <- counts %>%
+  tidy_otu() %>% 
+  dplyr::rename("gene" = "OTU_ID") %>% 
+  inner_join(dplyr::select(map.root, SampleID, Tissue, Treatment, Soil), by = "SampleID") %>% 
+  filter(!is.na(Count)) %>% 
+  filter(gene %in% sig$gene) %>% 
+  group_by(gene) %>% 
+  mutate(zscore = (Count - mean(Count))/sd(Count)) %>% 
+  ungroup() 
+
+# Create a matrix to run hierarchical clustering
+zs.mtx.root <- zs.tidy.root %>% 
+    dplyr::select(gene, SampleID, zscore) %>% 
+    spread(key = SampleID, value = zscore)
+zs.mtx.root <- as.data.frame(zs.mtx.root) 
+rownames(zs.mtx.root) <- zs.mtx.root$gene
+zs.mtx.root <- zs.mtx.root[,-1] 
+```
+
+Perform hierarchical clustering on the samples
+```{r}
+cluster.method <- "average"
+
+### Sample clustering
+sample.dist.root <- dist(t(as.matrix(zs.mtx.root))) 
+sample.clust.root <- hclust(sample.dist.root, method = cluster.method) 
+sample.ord.names.root<- sample.clust.root$labels[sample.clust.root$order] 
+sample.ord.root <- data.frame(SampleID = sample.ord.names.root, SampleOrder = 1:length(sample.ord.names.root))
+
+#Retrieve dendrogram data for plotting
+dd.row.root <- as.dendrogram(sample.clust.root)
+ddata_x.root <- dendro_data(dd.row.root)
+
+
+labs.root <- label(ddata_x.root) %>% 
+  inner_join(map.root, by = c("label" = "SampleID")) %>% 
+  mutate(Treatment = fct_recode(Treatment, 
+                                "SI" = "Ino",
+                                "MI" = "NC")) %>% 
+  mutate(Treatment = fct_relevel(Treatment, "SI"))
+
+#Plot dendorgram
+dendro.root <- ggplot(segment(ddata_x.root)) +
+  geom_segment(aes(x=x, y=y, xend=xend, yend=yend)) + 
+  geom_point(data= labs.root,
+             aes(x=x, y=5, shape = Soil, fill = Treatment), size = 2, stroke = 1) +
+  scale_fill_manual(values = c("#8C510A", "#DFC27D", "#4D9221","#B8E186")) + 
+  scale_shape_manual(values = c(21,22,24)) +
+  theme_classic() +
+  theme(text = element_text(size = 11),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        legend.position = "right") 
+
+dendro.root
+
+#Generate data frame with z-scores and order info
+master.root <- inner_join(zs.tidy.root, ord, by = "gene") %>% 
+  inner_join(sample.ord.root, by = "SampleID")
+
+# Plot mean abundances in a heatmap
+hm.root <- master.root %>% 
+  mutate(zscore = ifelse(zscore > 2, 2, zscore)) %>% 
+  ggplot(aes(reorder(paste(Soil,SampleID), SampleOrder), reorder(gene, order), fill = zscore)) +
+  geom_tile() +
+  scale_fill_distiller(palette = "Greys", direction = 1,
+                       name = "Expression\nin roots\n(z-score)",
+                       #guide = guide_colorbar(title.hjust = 1, title.position = "left"),
+                       limits = c(-2,2)) +
+  ylab("Differentially expressed gene") +
+  xlab("") +
+  facet_grid(Cluster ~ ., scales = "free", space = "free") +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        axis.text = element_blank(),
+        axis.title = element_blank(), 
+        axis.ticks = element_blank(),
+        axis.line.y = element_blank(),
+        panel.grid = element_blank(),
+        strip.text = element_text(size = 9, colour = "white"),
+        strip.background = element_rect(fill = "gray25"),
+        legend.position = "right")
+
+rn.dendro.root.p <- cowplot::plot_grid(dendro.root + theme(legend.position = "none"), hm.root, ncol = 1, align = "v", axis = "lr", rel_heights = c(2,7))
+rn.dendro.root.p
+```
+
+Annotate figure with results from MI vs SI analysis
+```{r}
+#Load results
+ino.res <- read.table("../Tables/supp.deg.deseq.tsv", sep = "\t", header = T)
+
+#Generate heatmap
+ino.p <- ino.res %>% 
+  filter(Tissue == "Root") %>% 
+  dplyr::select(Soil, gene, Direction) %>% 
+  spread(key = Soil, value = Direction) %>% 
+  right_join(ord, by = "gene") %>% 
+  gather(key = "Soil", value = "Direction", Arb:Dav) %>% 
+  mutate(Direction = ifelse(is.na(Direction), "NS", as.character(Direction)))  %>% 
+  mutate(Direction = fct_relevel(Direction, "Upregulated by MB", "Downregulated by MB")) %>% 
+  mutate(Soil = fct_recode(Soil,
+                           "Arbuckle" = "Arb",
+                           "Biggs" = "Big",
+                           "Davis" = "Dav")) %>% 
+  ggplot(aes(Soil, reorder(gene, order), fill = Direction)) +
+  geom_tile() +
+  ylab("Differentially expressed gene") +
+  facet_grid(Cluster ~ ., scales = "free", space = "free") +
+  scale_fill_manual(name = "Gene response\nrelative to\nMI roots", values = c(RColorBrewer::brewer.pal(3, "Set1")[2:1], "white")) +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.text.y = element_blank(),
+        axis.title.x = element_blank(), 
+        axis.ticks = element_blank(),
+        axis.line.y = element_blank(),
+        panel.grid = element_blank(),
+        strip.text = element_blank(),
+        legend.position = "right")
+
+ino.p
+```
+
+Put it all together
+685:750
+```{r}
+
+left <- cowplot::plot_grid(NA, dendro.root + theme(legend.position = "none"), 
+                   ino.p + theme(legend.position = "none"), 
+                   hm.root + theme(legend.position = "none"),
+                   ncol = 2, align = "hv", axis = "tblr", rel_heights = c(2,7), rel_widths = c(1,4))
+
+
+right <- cowplot::plot_grid(get_legend(dendro.root),
+                            get_legend(hm.root),
+                            get_legend(ino.p),
+                            nrow = 3)
+
+
+plot_grid(left, right, rel_widths = c(2,1))
+
+```
+

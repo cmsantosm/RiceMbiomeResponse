@@ -2,7 +2,7 @@ Load libraries
 ```{r}
 library(DESeq2)
 library(biobroom)
-library(ggdendro)
+#library(ggdendro)
 library(vegan)
 library(cowplot)
 library(RColorBrewer)
@@ -295,33 +295,77 @@ fc.ord <- data.frame(OTU_ID = fc.ord.names, order = 1:length(fc.ord.names))
 
 # Plot
 max.fc <- max(abs(acq.res$estimate))
-d <- acq.res %>% 
-  #filter(OTU_ID %in% get_top_taxa(otu.ra, tax, rank = "PhyClass", n = 20)$PhyClass) %>% 
+
+flipped.fc <- acq.res %>% 
   mutate(Treatment = fct_recode(Treatment, 
                                 "ES SI" = "Ino",
                                 "ES SG" = "PC")) %>% 
   mutate(Treatment = fct_relevel(Treatment,
                                  "ES SG", "ES SI")) %>% 
   inner_join(fc.ord, by = "OTU_ID") %>% 
-  ggplot(aes(Treatment, reorder(OTU_ID, order), fill = estimate)) +
+  mutate(estimate = -estimate) %>% 
+  ggplot(aes(reorder(OTU_ID, order),Treatment, fill = estimate)) +
   geom_tile(color = "white", size = 1) +
   geom_text(aes(label = "*", alpha = p.adjusted < 0.05)) +
-  scale_fill_gradientn(name = "BS vs ES\nlog2FC",
-                       colors = RColorBrewer::brewer.pal(9, "PuOr"),
+  scale_fill_gradientn(name = "ES vs BS\nlog2FC",
+                       colors = RColorBrewer::brewer.pal(9, "PuOr")[9:1],
                        limits = c(-max.fc, max.fc)) +
   scale_alpha_manual(values = c(0,1), guide = F) +
-  facet_grid(.~Soil) +
-  theme_minimal() +
+  facet_grid(Soil ~.) +
+  theme_bw() +
   theme(text = element_text(size = 13),
         axis.text.x = element_text(angle = 45, hjust = 1),
-        strip.text = element_text(size = 13),
         axis.title = element_blank(),
+        strip.text = element_text(colour = "white"),
+        strip.background = element_rect(fill="gray25"),
         panel.grid = element_blank(),
         legend.position = "bottom") 
-  
-  
-d
+
+flipped.fc
+
 ```
+
+```{r}
+phy.ra <- otu.ra %>%
+  tidy_otu() %>% 
+  inner_join(tax) %>% 
+  group_by(SampleID, PhyClass2) %>%
+  summarise(Total = sum(Count)) %>% 
+  group_by(SampleID) %>% 
+  mutate(RelAb = (Total/sum(Total))) %>% 
+  inner_join(pcoa.map, by = "SampleID") %>%
+  mutate(Group = paste(Compartment, Treatment, sep = ".")) %>%
+  mutate(Group = fct_relevel(Group, "BS.Ino", "ES.PC", "ES.Ino")) %>%
+  mutate(Group = fct_recode(Group,
+                            "BS" = "BS.Ino",
+                            "ES SI" = "ES.Ino",
+                            "ES SG" = "ES.PC")) %>% 
+  mutate(Group = fct_relevel(Group, "BS", "ES SG", "ES SI")) %>% 
+  mutate(PhyClass2 = fct_recode(PhyClass2, "Low abundance" = "other")) %>% 
+  mutate(PhyClass2 = fct_relevel(PhyClass2, "Low abundance"))
+
+# Plot taxonomy barplots
+phy.plot <- ggplot(phy.ra) +
+  geom_bar(aes(SampleID, RelAb, fill = PhyClass2), stat = "identity") +
+  scale_fill_manual(values = phy.pal, name = "") +
+  facet_grid(. ~ Soil + Group, scales = "free", space = "free") +
+  ylab("Relative abundance") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.text = element_text(colour = "white"),
+        strip.background = element_rect(fill="gray25"),
+        legend.position = "bottom") 
+
+phy.plot
+```
+661:758
+```{r}
+plot_grid(phy.plot, flipped.fc, nrow = 2, rel_heights = c(2,2.25), labels = c("(a)", "(b)"), label_size = 15)
+```
+
 
 Format data for supplementary table
 ```{r}

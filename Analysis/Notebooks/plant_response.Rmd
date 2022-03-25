@@ -17,6 +17,12 @@ trt.res <- readRDS("../Data/msu_trt_res.RDS") %>%
   group_by(Tissue) %>% 
   mutate(p.adjusted2 = p.adjust(p.value, method = "fdr")) %>% 
   ungroup()
+
+trt.res %>% 
+  group_by(Tissue, gene) %>% 
+  dplyr::count() %>% 
+  group_by(Tissue) %>% 
+  dplyr::count()
 ```
 
 Perform PCA
@@ -214,6 +220,9 @@ ma.p <- trt.res %>%
 ma.p
 ```
 
+
+
+
 Upset plot
 ```{r}
 # Generate a data frame with the number of DEGs in each overlap
@@ -233,7 +242,25 @@ baroverlap.df <- trt.res %>%
                            "ArbuckleBiggsDavis")) %>% 
   group_by(Tissue, Direction, Direction2, Set) %>% 
   count() %>% 
-  mutate(Color = ifelse(Set == "ArbuckleBiggsDavis","Core", "No")) 
+  mutate(Color = ifelse(Set == "ArbuckleBiggsDavis","Core", "No")) %>% 
+  group_by(Tissue) %>% 
+  mutate(Total = sum(n)) %>% 
+  ungroup() %>% 
+  mutate(Percent = n/Total * 100) %>% 
+  mutate(Label = paste(n, " (", round(Percent,1), "%)", sep = ""))
+
+
+baroverlap.df
+
+pct.core <- trt.sig %>% 
+  mutate(Direction = ifelse(estimate > 0, "Upregulated by MB", "Downregulated by MB")) %>% 
+  group_by(Tissue, gene, Direction) %>% 
+  summarise(Set = n()) %>% 
+  group_by(Tissue, Direction, Set) %>% 
+  count() %>% 
+  inner_join(total, by = "Tissue") %>% 
+  mutate(Percent = n/Total) %>% 
+  filter(Set == 3)
 
 # Plot 
 overlap <- trt.res %>%
@@ -267,8 +294,8 @@ overlap <- trt.res %>%
 baroverlap <- baroverlap.df %>% 
   ggplot(aes(Set, n, fill = Direction, color = Color)) + 
   geom_bar(stat = "identity", size = 1) +
-  geom_text(data = filter(baroverlap.df, Direction2 == "Up" & Set == "ArbuckleBiggsDavis"), aes(y = n - 30, label = n), hjust = 1, color = "white", angle = 90, size = 3.5) +
-  geom_text(data = filter(baroverlap.df, Direction2 == "Down" & Set == "ArbuckleBiggsDavis"), aes(y = n - 30, label = n), hjust = 1, color = "black", angle = 90, size = 3.5) +
+  geom_text(data = filter(baroverlap.df, Direction2 == "Up" & Set == "ArbuckleBiggsDavis"), aes(y = n - 30, label = Label), hjust = 1, color = "white", angle = 90, size = 3.5) +
+  geom_text(data = filter(baroverlap.df, Direction2 == "Down" & Set == "ArbuckleBiggsDavis"), aes(y = n - 30, label = Label), hjust = 1, color = "black", angle = 90, size = 3.5) +
   scale_fill_manual(values = c("#8C510A", "#DFC27D", "#4D9221", "#B8E186"), guide = F) +
   scale_color_manual(values = c("black", "white")) +
   facet_grid(. ~ Direction) +
@@ -301,9 +328,9 @@ Put it all together
 ```{r}
 ### 850:650
 top <- plot_grid(pca.p, ma.p, rel_widths = c(1,2),
-                  labels = c("A", "B"), label_size = 20)
+                  labels = c("(a)", "(b)"), label_size = 15)
 
 plot_grid(top, upset.p, ncol = 1, 
           rel_heights = c(6,6),
-          labels = c(NA, "C"), label_size = 20)
+          labels = c(NA, "(c)"), label_size = 15)
 ```
