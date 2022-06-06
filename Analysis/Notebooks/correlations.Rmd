@@ -248,13 +248,6 @@ svd.master %>%
                           "Arbuckle" = "Arb",
                           "Biggs" = "Big",
                           "Davis" = "Dav")) %>% 
-  # inner_join(dplyr::select(mb.svd.var.1, Cluster, Variance), by = c("MbCluster" = "Cluster")) %>% 
-  # dplyr::rename("MbVariance" = "Variance") %>% 
-  # inner_join(dplyr::select(rn.svd.var.1, Cluster, Variance), by = c("RnaCluster" = "Cluster")) %>% 
-  # dplyr::rename("RnaVariance" = "Variance") %>% 
-  # mutate(MbClusterFull = paste(MbCluster, " (", round(MbVariance, 1), "%)", sep = "")) %>% 
-  # mutate(RnaClusterFull = paste(RnaCluster, " (", round(RnaVariance, 1), "%)", sep = "")) %>% 
-  # mutate(StatsFull = paste("t = ", statistic, ", P = ", p.adj, sep = "")) %>% 
   ggplot(aes(RnaScore, MbScore)) +
   geom_point(aes(shape = Soil, fill = Soil)) +
   geom_smooth(method = "lm", color = "black") +
@@ -401,6 +394,33 @@ pairs.cor.p <- pairs.sig %>%
 pairs.cor.p
 ```
 
+Load LRR annotations and format
+```{r}
+# Load data from 
+lrr <- read.table("../../General/lrr.tsv", header = T, sep = "\t", quote = "", comment.char = "")
+nlr.1 <- filter(lrr, Gene.Fam == "NLR")$ID_MSU %>% unique() %>% as.character()
+
+# Load data from
+nlr.2 <- read.table("../../General/nlr.tsv", header = F)$V1 %>% as.character()
+nlr.2 <- paste("LOC_", nlr.2, sep = "")
+
+# Get all NLRs across the two annotation sources
+nlr <- unique(c(nlr.1, nlr.2))
+nlr %>% length()
+
+# Get RLKs
+rlk <- filter(lrr, Gene.Fam == "LRR-RLK")$ID_MSU %>% unique() %>% as.character()
+
+# Load the Symbol names from the funrice database
+funrice <- read.table("../../General/geneKeyword.table.txt", header = T, sep = "\t", quote = "")
+funrice.ids <- select(funrice, MSU, Symbol) %>% group_by(MSU,Symbol) %>% count %>% ungroup() %>% select(-n)
+
+# Compile 
+rcptr <- rbind(data.frame(gene = nlr, family = "NLR"),
+               data.frame(gene = rlk, family = "LRR-RLK")) %>% 
+  left_join(funrice.ids, by = c("gene" = "MSU"))
+```
+
 Explore LRRs that were part of significant correlations
 ```{r}
 #Subset correlation results and rank LRRs based on how many significant correlations they were part of
@@ -414,34 +434,6 @@ pairs.ranks <- pairs.res %>%
   ungroup() %>% 
   dplyr::select(gene, Rank)
 
-
-#Plot top 10 LRRs highlighting how many correlations involved a coreOTU
-lrr.p <- pairs.res %>% 
-  filter(p.adj < 0.05) %>% 
-  inner_join(rcptr, by = "gene") %>% 
-  group_by(gene) %>% 
-  mutate(Total = n()) %>% 
-  inner_join(pairs.ranks, by = "gene") %>% 
-  filter(Rank < 11) %>% 
-  mutate(Core = ifelse(OTU_ID %in% core.ids, "Core OTU", "Non-core OTU")) %>% 
-  mutate(family = fct_relevel(family, "LRR-RLK")) %>% 
-  ggplot(aes(reorder(gene, Total), fill = Core)) +
-  geom_bar() +
-  facet_grid(. ~ family, scales = "free", space = "free") +
-  scale_fill_manual(name = "", values = rcartocolor::carto_pal(8, "Bold")[c(3,6)]) +
-  guides(fill = guide_legend(nrow = 3)) +
-  ylab("Number of significant correlations\nwith a differentially abundant OTU") +
-  xlab("Gene") +
-  theme_bw() +
-  theme(text = element_text(size = 11),
-        axis.text.x = element_text(angle = 45, hjust = 1),
-        strip.text = element_text(size = 9, colour = "white"),
-        strip.background = element_rect(fill="gray25"),
-        axis.ticks = element_blank()) +
-  theme(legend.position = "bottom")
-
-lrr.p
-
 #How many correlations in the top 10 LRRs involved a core TU
 pairs.res %>% 
   filter(p.adj < 0.05) %>% 
@@ -454,6 +446,7 @@ pairs.res %>%
   group_by(Core) %>% 
   dplyr::count()
 
+#Plot top 10 LRRs
 lrr.p <- pairs.res %>% 
   filter(p.adj < 0.05) %>% 
   inner_join(rcptr, by = "gene") %>% 
@@ -498,13 +491,6 @@ pairs.res %>%
   inner_join(rcptr, by = "gene") %>% 
   inner_join(tax, by = "OTU_ID") %>% 
   group_by(OTU_ID) %>% 
-  count()
-
-pairs.res %>% 
-  filter(p.adj < 0.05) %>% 
-  inner_join(rcptr, by = "gene") %>% 
-  inner_join(tax, by = "OTU_ID") %>% 
-  group_by(OTU_ID) %>% 
   count() %>% 
   inner_join(tax, by = "OTU_ID") %>% 
   group_by(Phylum) %>% 
@@ -523,17 +509,6 @@ pairs.res %>%
   arrange(-n)
  
 
-pairs.res %>% 
-  filter(p.adj < 0.05) %>% 
-  inner_join(rcptr, by = "gene") %>% 
-  group_by(gene) %>% 
-  mutate(Total = n()) %>% 
-  inner_join(pairs.ranks, by = "gene") %>% 
-  filter(Rank < 11) %>% 
-  group_by(family, gene, Rank, RnCluster) %>% 
-  dplyr::count() %>% 
-  arrange(family, -Rank)
-
 ino.res <- read.table("../Tables/supp.deg.deseq.tsv", sep = "\t", header = T)
 
 pairs.res %>% 
@@ -543,8 +518,6 @@ pairs.res %>%
   dplyr::count() %>% 
   inner_join(ino.res, by = "gene") %>% 
   filter(Tissue == "Root")
-  group_by(gene) %>% 
-  mutate(Total = n())
   
 lrr.ids <- pairs.res %>% 
   filter(p.adj < 0.05) %>% 
