@@ -267,7 +267,8 @@ fc.counts <- tidy_vsd %>%
                                 "Root genes\ndownreg. by MB" = "R.Dn")) %>% 
   mutate(Treatment = fct_recode(Treatment,
                                 "SI" = "Ino",
-                                "MI" = "NC"))
+                                "MI" = "NC")) %>% 
+  mutate(Treatment = fct_relevel(Treatment, "MI"))
 
 #Plot
 top <- fc.counts %>% 

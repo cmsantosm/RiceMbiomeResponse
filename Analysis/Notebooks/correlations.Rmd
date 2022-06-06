@@ -127,7 +127,18 @@ svd.master %>%
   ggplot(aes(RnaScore, MbScore)) +
   geom_point(aes(shape = Soil, fill = Soil)) +
   geom_smooth(method = "lm", color = "black") +
-  facet_wrap(~Group, scales = "free") +
+  facet_wrap(~Group) +
+  scale_fill_brewer(palette = "Set2",
+                    guide = guide_legend(title.hjust = 0.5, title.position = "top", ncol = 1)) +
+  scale_shape_manual(name = "", values = c(21,22,24),
+                     guide = guide_legend(title.hjust = 0.5, title.position = "top", nrow = 1)) 
+
+
+svd.master %>% 
+  ggplot(aes(RnaScore, MbScore)) +
+  geom_point(aes(shape = Soil, fill = Soil)) +
+  geom_smooth(method = "lm", color = "black") +
+  facet_wrap(~Group) +
   scale_fill_brewer(palette = "Set2",
                     guide = guide_legend(title.hjust = 0.5, title.position = "top", ncol = 1)) +
   scale_shape_manual(name = "", values = c(21,22,24),
@@ -140,27 +151,34 @@ run_cor_svd <- function(df){
   rbind(cor.test(df$RnaScore, df$MbScore, alternative = "two.sided", method = "pearson") %>% tidy())
 }
 
-svd.master %>% 
+supp.table.svd <- svd.master %>% 
   group_by(Group) %>% 
   nest() %>% 
   mutate(Correlation = map(data, run_cor_svd)) %>% 
   unnest(Correlation) %>% 
   ungroup() %>% 
   mutate(p.adj = p.adjust(p.value, method = "fdr")) %>% 
-  filter(p.adj < .05) %>% 
-  dplyr::select(Group, p.adj) %>% 
-  arrange(p.adj)
+  #filter(p.adj < .05) %>% 
+  #dplyr::select(Group, p.adj) %>% 
+  arrange(p.adj) %>% 
+  mutate(GeneCluster = str_sub(Group, 14,14),
+         OTUCluster = str_sub(Group, 28,28)) %>% 
+  dplyr::select(GeneCluster, OTUCluster, statistic, p.value, p.adj)
+
+supp.table.svd
+
+write.table(supp.table.svd, "../Tables/supp.gene.otu.svd.tsv", quote = F, sep = "\t", row.names = F, col.names = T)  
 ```
 
-The two most significant correlations involved OTU Module 2. Generate figure with correlation patterns
+The two most significant correlations involved OTU Cluster 2. Generate figure with correlation patterns
 ```{r}
 #Subset SVD results
 mb.svd.var.1 <- filter(mb.svd.var.df, SVD == "SVD1")
 rn.svd.var.1 <- filter(rn.svd.var.df, SVD == "SVD1")
 
-#Plot correlation with gene module 1
+#Plot correlation with gene Cluster 1
 svd.p1 <- svd.master %>% 
-  filter(Group =="Gene Module 1 OTU Module 2 SVD1 SVD1") %>% 
+  filter(Group =="Gene Cluster 1 OTU Cluster 2 SVD1 SVD1") %>% 
   ggplot(aes(MbScore, RnaScore)) +
   geom_point(aes(shape = Soil, fill = Soil)) +
   geom_smooth(method = "lm", color = "black", se = F) +
@@ -168,20 +186,20 @@ svd.p1 <- svd.master %>%
                     guide = guide_legend(title.hjust = 0.5, title.position = "top", nrow = 1)) +
   scale_shape_manual(name = "Soil", values = c(21,22,24),
                      guide = guide_legend(title.hjust = 0.5, title.position = "top", nrow = 1)) +
-  xlab(paste("OTU Module 2\nSV1 (", round(filter(mb.svd.var.1, Cluster == "OTU Module 2")$Variance, 1), "%)", sep = "")) +
-  ylab(paste("Gene Module 1\nSV1 (", round(filter(rn.svd.var.1, Cluster == "Gene Module 1")$Variance, 1), "%)", sep = "")) +
+  xlab(paste("OTU Cluster 2\nSV1 (", round(filter(mb.svd.var.1, Cluster == "OTU Cluster 2")$Variance, 1), "%)", sep = "")) +
+  ylab(paste("Gene Cluster 1\nSV1 (", round(filter(rn.svd.var.1, Cluster == "Gene Cluster 1")$Variance, 1), "%)", sep = "")) +
   theme_bw() +
   theme(text = element_text(size = 11),
         legend.position = "none")
 
-#Plot correlation with gene module 1. Note that we switched the direction of the scores for visualization purposes so it fits the opposite trends displayed by the heatmap.
+#Plot correlation with gene Cluster 1. Note that we switched the direction of the scores for visualization purposes so it fits the opposite trends displayed by the heatmap.
 svd.p2 <- svd.master %>% 
   mutate(Soil = fct_recode(Soil,
                            "Arbuckle" = "Arb", 
                            "Biggs" = "Big",
                            "Davis" = "Dav")) %>% 
   mutate(RnaScore = -RnaScore) %>% 
-  filter(Group =="Gene Module 2 OTU Module 2 SVD1 SVD1") %>% 
+  filter(Group =="Gene Cluster 2 OTU Cluster 2 SVD1 SVD1") %>% 
   ggplot(aes(MbScore, RnaScore)) +
   geom_point(aes(shape = Soil, fill = Soil)) +
   geom_smooth(method = "lm", color = "black", se = F) +
@@ -189,8 +207,8 @@ svd.p2 <- svd.master %>%
                     guide = guide_legend(title.hjust = 0.5, title.position = "top", nrow = 3)) +
   scale_shape_manual(name = "Soil", values = c(21,22,24),
                      guide = guide_legend(title.hjust = 0.5, title.position = "top", nrow = 3)) +
-  xlab(paste("OTU Module 2\nSV1 (", round(filter(mb.svd.var.1, Cluster == "OTU Module 2")$Variance, 1), "%)", sep = "")) +
-  ylab(paste("Gene Module 2\nSV1 (", round(filter(rn.svd.var.1, Cluster == "Gene Module 2")$Variance, 1), "%)", sep = "")) +
+  xlab(paste("OTU Cluster 2\nSV1 (", round(filter(mb.svd.var.1, Cluster == "OTU Cluster 2")$Variance, 1), "%)", sep = "")) +
+  ylab(paste("Gene Cluster 2\nSV1 (", round(filter(rn.svd.var.1, Cluster == "Gene Cluster 2")$Variance, 1), "%)", sep = "")) +
   theme_bw() +
   theme(text = element_text(size = 11),
         legend.position = "none")
@@ -199,6 +217,60 @@ svd.p2 <- svd.master %>%
 svd.p <- plot_grid(get_legend(svd.p2 + theme(legend.position = "top", text = element_text(size = 13))), svd.p1, svd.p2, 
                    nrow = 3, rel_heights = c(2, 3.5, 3.5), labels = c(NA, "(c)", NA), label_size = 15)
 svd.p
+```
+
+```{r}
+svd.cor.tidy <- svd.master %>% 
+  group_by(Group) %>% 
+  nest() %>% 
+  mutate(Correlation = map(data, run_cor_svd)) %>% 
+  unnest(Correlation) %>% 
+  ungroup() %>% 
+  mutate(p.adj = p.adjust(p.value, method = "fdr")) %>% 
+  dplyr::select(Group, statistic, p.adj) %>% 
+  mutate(statistic = round(statistic, 2)) %>% 
+  mutate(p.adj = round(p.adj, 4)) %>% 
+  mutate(RnaCluster = str_extract(Group, "Gene Cluster \\d")) %>% 
+  mutate(MbCluster = str_extract(Group, "OTU Cluster \\d")) %>% 
+  inner_join(dplyr::select(mb.svd.var.1, Cluster, Variance), by = c("MbCluster" = "Cluster")) %>% 
+  dplyr::rename("MbVariance" = "Variance") %>% 
+  inner_join(dplyr::select(rn.svd.var.1, Cluster, Variance), by = c("RnaCluster" = "Cluster")) %>% 
+  dplyr::rename("RnaVariance" = "Variance") %>% 
+  mutate(MbClusterFull = paste(MbCluster, " (", round(MbVariance, 1), "%)", sep = "")) %>% 
+  mutate(RnaClusterFull = paste(RnaCluster, " (", round(RnaVariance, 1), "%)", sep = "")) %>% 
+  mutate(StatsFull = paste("t = ", statistic, ", P = ", p.adj, sep = "")) 
+
+#476:722
+svd.master %>% 
+  mutate(RnaScore = ifelse(RnaCluster == "Gene Cluster 2", -RnaScore, RnaScore)) %>% 
+  inner_join(svd.cor.tidy, by = "Group") %>% 
+  mutate(Soil = fct_recode(Soil,
+                          "Arbuckle" = "Arb",
+                          "Biggs" = "Big",
+                          "Davis" = "Dav")) %>% 
+  # inner_join(dplyr::select(mb.svd.var.1, Cluster, Variance), by = c("MbCluster" = "Cluster")) %>% 
+  # dplyr::rename("MbVariance" = "Variance") %>% 
+  # inner_join(dplyr::select(rn.svd.var.1, Cluster, Variance), by = c("RnaCluster" = "Cluster")) %>% 
+  # dplyr::rename("RnaVariance" = "Variance") %>% 
+  # mutate(MbClusterFull = paste(MbCluster, " (", round(MbVariance, 1), "%)", sep = "")) %>% 
+  # mutate(RnaClusterFull = paste(RnaCluster, " (", round(RnaVariance, 1), "%)", sep = "")) %>% 
+  # mutate(StatsFull = paste("t = ", statistic, ", P = ", p.adj, sep = "")) %>% 
+  ggplot(aes(RnaScore, MbScore)) +
+  geom_point(aes(shape = Soil, fill = Soil)) +
+  geom_smooth(method = "lm", color = "black") +
+  geom_text(data = svd.cor.tidy, aes(-.035, 0.5, label = StatsFull), size = 3) +
+  xlab("Gene Cluster SVD 1") + 
+  ylab("OTU Cluster SVD 1") +
+  #facet_wrap(~Group) +
+  facet_grid(MbClusterFull ~ RnaClusterFull) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_shape_manual(name = "Soil", values = c(21,22,24))  +
+  guides(fill = FALSE) +
+  theme_bw() +
+  theme(text = element_text(size = 12),
+        legend.position = "top",
+        strip.text = element_text(size = 9, colour = "white"),
+        strip.background = element_rect(fill="gray25"))
 ```
 
 Perform correlation analyses between OTU-gene pairs
@@ -235,9 +307,9 @@ pairs.tidy <- mb.tidy %>%
   left_join(dplyr::select(rn.clust, gene, Cluster, family, Symbol)) %>% 
   dplyr::rename("RnCluster" = "Cluster")
 
-#Filter pairs that only include OTUs from Module 2
+#Filter pairs that only include OTUs from Cluster 2
 pairs.filt <- pairs.tidy %>% 
-  filter(MbCluster == "OTU Module 2") 
+  filter(MbCluster == "OTU Cluster 2") 
 
 #Run correlations
 run_cor_pairs <- function(df){
@@ -287,27 +359,46 @@ pairs.sig %>%
   group_by(Phylum) %>% 
   dplyr::count()
 
+pairs.sig %>% 
+  group_by(OTU_ID, Phylum,Rank) %>%
+  dplyr::count() %>% 
+  arrange(-Rank)
+  
+pairs.alt <- pairs.sig %>% 
+  group_by(OTU_ID, Rank) %>% 
+  count() %>% 
+  arrange(Rank) %>% 
+  ungroup() %>% 
+  dplyr::select(OTU_ID)
+pairs.alt$OTU_ID2 <- LETTERS[1:10]
+
 #Plot the top 10 OTUs
 pairs.cor.p <- pairs.sig %>% 
+  inner_join(pairs.alt, by = "OTU_ID") %>% 
   mutate(Core = OTU_ID %in% core.ids) %>% 
-  mutate(Taxonomy = ifelse(Core,
-                           paste("*", OTU_ID, sep = " "),OTU_ID)) %>% 
-  ggplot(aes(reorder(Taxonomy, -Rank), nCluster, fill = RnCluster)) +
+  #mutate(Taxonomy = paste(str_sub(Phylum,1,1), ":", Family, OTU_ID2)) %>% 
+  mutate(Taxonomy = paste(Family, OTU_ID2)) %>% 
+  #mutate(Taxonomy = paste(str_sub(Phylum,1,1), ":", Genus, "OTU")) %>% 
+  # mutate(Taxonomy = ifelse(Core,
+  #                          paste("*", OTU_ID, sep = " "),OTU_ID)) %>% 
+  ggplot(aes(reorder(Taxonomy, Rank), nCluster, fill = RnCluster)) +
   geom_bar(stat = "identity") +
+  geom_point(aes(y = 0, color = Phylum), size = 3) +
   #scale_fill_manual(name = "", values = brewer.pal(11, "Reds")[c(7,4)]) +
   scale_fill_manual(name = "", values = brewer.pal(11, "Set2")[c(4,6)]) +
+  scale_color_manual(name = "", values = rcartocolor::carto_pal(8, "Bold")[c(2,3,7,8)]) +
+  guides(color = F) +
   guides(fill = guide_legend(nrow = 2)) +
   #coord_flip() +
   xlab("OTU") +
   ylab("Number of significant correlations\nwith a differentially expressed gene") +
   theme_bw() +
-  theme(text = element_text(size = 11),
-        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(text = element_text(size = 10),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
   #theme(legend.position = c(0.75,0.25))
   theme(legend.position = "bottom")
 
 pairs.cor.p
-pairs.ab.p
 ```
 
 Explore LRRs that were part of significant correlations
@@ -362,15 +453,121 @@ pairs.res %>%
   mutate(Core = OTU_ID %in% core.ids) %>% 
   group_by(Core) %>% 
   dplyr::count()
+
+lrr.p <- pairs.res %>% 
+  filter(p.adj < 0.05) %>% 
+  inner_join(rcptr, by = "gene") %>% 
+  group_by(gene) %>% 
+  mutate(Total = n()) %>% 
+  inner_join(pairs.ranks, by = "gene") %>% 
+  filter(Rank < 11) %>% 
+  mutate(Core = ifelse(OTU_ID %in% core.ids, "Core OTU", "Non-core OTU")) %>% 
+  mutate(family = fct_relevel(family, "LRR-RLK")) %>% 
+  inner_join(tax, by = "OTU_ID") %>% 
+  ggplot(aes(reorder(gene, -Total), fill = Phylum)) +
+  geom_bar() +
+  geom_point(aes(y = 0, color = RnCluster), size = 3) +
+  facet_grid(. ~ family, scales = "free", space = "free") +
+  scale_fill_manual(name = "", values = rcartocolor::carto_pal(8, "Bold")) +
+  scale_color_manual(name = "", values = brewer.pal(11, "Set2")[c(4,6)]) +
+  guides(color = F) +
+  ylab("Number of significant correlations\nwith a differentially abundant OTU") +
+  xlab("Gene") +
+  theme_bw() +
+  theme(text = element_text(size = 10),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        strip.text = element_text(size = 7, colour = "white"),
+        strip.background = element_rect(fill="gray25")) +
+  theme(legend.position = "bottom")
+
+
+lrr.p
 ```
+
+```{r}
+pairs.res %>% 
+  filter(p.adj < 0.05) %>% 
+  inner_join(rcptr, by = "gene") %>% 
+  group_by(gene,family) %>% 
+  dplyr::count() %>% 
+  group_by(family) %>% 
+  dplyr::count()
+
+pairs.res %>% 
+  filter(p.adj < 0.05) %>% 
+  inner_join(rcptr, by = "gene") %>% 
+  inner_join(tax, by = "OTU_ID") %>% 
+  group_by(OTU_ID) %>% 
+  count()
+
+pairs.res %>% 
+  filter(p.adj < 0.05) %>% 
+  inner_join(rcptr, by = "gene") %>% 
+  inner_join(tax, by = "OTU_ID") %>% 
+  group_by(OTU_ID) %>% 
+  count() %>% 
+  inner_join(tax, by = "OTU_ID") %>% 
+  group_by(Phylum) %>% 
+  count() %>% 
+  arrange(-n)
+
+pairs.res %>% 
+  filter(p.adj < 0.05) %>% 
+  inner_join(rcptr, by = "gene") %>% 
+  inner_join(tax, by = "OTU_ID") %>% 
+  group_by(OTU_ID) %>% 
+  count() %>% 
+  mutate(Core = OTU_ID %in% core.ids) %>% 
+  group_by(Core) %>% 
+  count() %>% 
+  arrange(-n)
+ 
+
+pairs.res %>% 
+  filter(p.adj < 0.05) %>% 
+  inner_join(rcptr, by = "gene") %>% 
+  group_by(gene) %>% 
+  mutate(Total = n()) %>% 
+  inner_join(pairs.ranks, by = "gene") %>% 
+  filter(Rank < 11) %>% 
+  group_by(family, gene, Rank, RnCluster) %>% 
+  dplyr::count() %>% 
+  arrange(family, -Rank)
+
+ino.res <- read.table("../Tables/supp.deg.deseq.tsv", sep = "\t", header = T)
+
+pairs.res %>% 
+  filter(p.adj < 0.05) %>% 
+  inner_join(rcptr, by = "gene") %>% 
+  group_by(gene) %>% 
+  dplyr::count() %>% 
+  inner_join(ino.res, by = "gene") %>% 
+  filter(Tissue == "Root")
+  group_by(gene) %>% 
+  mutate(Total = n())
+  
+lrr.ids <- pairs.res %>% 
+  filter(p.adj < 0.05) %>% 
+  inner_join(rcptr, by = "gene") %>% 
+  group_by(gene) %>% 
+  dplyr::count() %>% 
+  .$gene 
+
+lrr.ids
+```
+
 
 Put it all together. Make sure that the OTU and gene dendrograms from the other 2 notebooks are loaded.
 ```{r}
 top <- plot_grid(rn.dendro.p, mb.dendro.p, svd.p, ncol = 3, labels = c("(a)", "(b)", NA), label_size = 15)
+
+top <- plot_grid(rn.dendro.p, mb.dendro.p, soil.go, ncol = 3, labels = c("(a)", "(b)", "(c)"), label_size = 15, rel_widths = c(1,1,2))
+
 right  <- plot_grid(pairs.cor.p, lrr.p, ncol = 2, align = "h", axis = "tb", rel_widths = c(2,3.5), labels = c("(d)", "(e)"), label_size = 15)
 
 ##733:983
-plot_grid(top, right, nrow = 2, rel_heights = c(1.25,1))
+##795:978
+plot_grid(top, right, nrow = 2, rel_heights = c(1,1))
 ```
 
 Generate supplementary table
@@ -378,12 +575,20 @@ Generate supplementary table
 supp.table.cor <- pairs.res %>% 
   filter(p.adj < 0.05) %>% 
   dplyr::select(-data, -parameter, -conf.low, -conf.high, -method, -alternative) %>% 
-  dplyr::rename("OTU_Module" = "MbCluster",
-                "Gene_Module" = "RnCluster") %>% 
+  dplyr::rename("OTU_Cluster" = "MbCluster",
+                "Gene_Cluster" = "RnCluster") %>% 
   group_by(OTU_ID) %>% 
   mutate(Total = n()) %>% 
   arrange(-Total) %>% 
-  dplyr::select(-Total)
+  dplyr::select(-Total) %>% 
+  left_join(pairs.alt, by = "OTU_ID") %>% 
+  dplyr::rename("Fig6d_ID" = "OTU_ID2") %>% 
+  left_join(rcptr, by = "gene") %>% 
+  dplyr::rename("ReceptorFamily" = "family") %>% 
+  dplyr::select(-Symbol) %>% 
+  mutate(CoreOTU = OTU_ID %in% core.ids) %>% 
+  inner_join(tax, by = "OTU_ID") %>% 
+  dplyr::select(-Assignment)
 
 write.table(supp.table.cor, "../Tables/supp.gene.otu.cor.tsv", quote = F, sep = "\t", row.names = F, col.names = T)  
 ```

@@ -201,14 +201,17 @@ ndag <- trt.res %>%
 # Plot
 ma.p <- trt.res %>% 
   ggplot(aes(baseMean, -estimate, color = Direction)) +
-  geom_point(aes(alpha = p.adjusted2 >= 0.05 | is.na(p.adjusted2)), size = 1) +
+  #geom_point(aes(alpha = p.adjusted2 >= 0.05 | is.na(p.adjusted2)), size = 1) +
+  geom_point(data = filter(trt.res, Direction == "NS"), size = 1, alpha = 1) +
+  geom_point(data = filter(trt.res, Direction != "NS"), size = 1, alpha = 1) +
   geom_text(data = filter(ndag, Direction %in% c("R.Up", "L.Up")), aes(x = 1000, y = -2, label = n), color = "black") +
   geom_text(data = filter(ndag, Direction %in% c("R.Dn", "L.Dn")), aes(x = 1000, y = 2, label = n), color = "white") +
   scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
   facet_grid(Tissue ~ Soil) +
-  scale_alpha_manual(values = c(1, 0.1), 
-                     guide = F) +
-  scale_color_manual(values = c("#DFC27D", "#8C510A", "#B8E186", "#4D9221", "gray75"),
+  # scale_alpha_manual(values = c(1, 0.1), 
+  #                    guide = F) +
+  scale_color_manual(values = c("#DFC27D", "#8C510A", "#B8E186", "#4D9221", "gray75"), 
+                     breaks = c("R.Up", "R.Dn", "L.Up", "L.Dn", "NS"),
                      guide = F) +
   ylab("SI vs MI\nfold change (log2)") +
   xlab("Mean of normalized counts") +

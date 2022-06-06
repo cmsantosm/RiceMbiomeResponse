@@ -1,0 +1,903 @@
+Load libraries
+```{r}
+library(DESeq2)
+library(biobroom)
+library(ggdendro)
+library(vegan)
+library(RColorBrewer)
+library(cowplot)
+library(tidyverse)
+
+source("../../General/rmb_functions.R")
+source("../../General/parameters.R")
+```
+
+Load data
+```{r}
+map <- readRDS("../Data/GNOTO_MB_map.RDS") %>% 
+  filter(Treatment != "NC") %>% 
+  mutate(Set = case_when(Compartment == "BS" ~ "BS",
+                         Compartment == "ES" & Treatment == "PC" ~ "ES.PC",
+                         Compartment == "ES" & Treatment == "Ino" ~ "ES.Ino"))
+
+otu <- readRDS("../Data/SILVAcr_otu.RDS")
+tax <- readRDS("../Data/SILVAcr_tax.RDS")
+
+# Remove low prevalent OTUs (occupancy < 5% samples)
+otu <- otu[,colnames(otu) %in% map$SampleID]
+otu <- otu[rowSums(otu) > 0.05*ncol(otu),]
+```
+
+Get relative abundances and top phyla
+```{r}
+# Calculate relative abundances
+otu.ra <- rel_ab(otu)
+otu.ra.tidy <- tidy_otu(otu.ra) %>% mutate(Count = Count/100)
+
+# Get top 11 phyla
+tax <- expand_proteo(tax)
+top.tax <- get_top_taxa(otu.ra, tax, rank = "PhyClass", n = 11)
+tax <- collapse_other(tax, top.tax)
+
+# Pool all other taxa into a "low abundance" category
+tax <- tax %>% 
+  mutate(PhyClass2 = fct_recode(PhyClass2, "Low abundance" = "other")) %>% 
+  mutate(PhyClass2 = fct_relevel(PhyClass2, "Low abundance"))
+```
+
+Calculate Bray-Curtis dissimilarities
+```{r}
+dist <- beta_div_dist(otu.ra %>% log_norm)
+```
+
+Perform hierarchical clustering on the Bray-Curtis dissimilarities
+```{r}
+# Run hierarchical clustring
+dd.row <- as.dendrogram(hclust(as.dist(dist), method = "average"))
+ddata_x <- dendro_data(dd.row)
+
+# Extract data for plotting dendogram
+dendro.p <- ggplot(segment(ddata_x)) +
+  geom_segment(aes(x=x, y=y, xend=xend, yend=yend))
+
+# Get the labels for the tips of the dendogram
+labs <- label(ddata_x) %>% 
+  inner_join(map, by = c("label" = "SampleID")) %>% 
+  mutate(Soil = fct_recode(Soil,
+                           Arbuckle = "Arb",
+                           Biggs = "Big",
+                           Davis = "Dav")) %>% 
+  mutate(Set = fct_recode(Set,
+                          "BS" = "BS.Ino",
+                          "ES SI" = "ES.Ino",
+                          "ES SG" = "ES.PC")) %>% 
+  mutate(Set = fct_relevel(Set, "BS", "ES SG", "ES SI"))
+
+# Generate a data frame with the relative abundances of each phylum
+phy.ra <- otu %>%
+  tidy_otu() %>% 
+  inner_join(tax) %>% 
+  group_by(SampleID, PhyClass2) %>%
+  summarise(Total = sum(Count)) %>% 
+  group_by(SampleID) %>% 
+  mutate(RelAb = (Total/sum(Total))) %>% 
+  inner_join(map, by = "SampleID") %>% 
+  select(SampleID, PhyClass2, RelAb)
+
+phy.ra <- inner_join(labs, phy.ra,  by = c("label" = "SampleID"))
+
+# Plot dendrogram
+clad <- dendro.p +
+  geom_point(data=labs,
+             aes(x=x, y=0.1, shape = Soil, fill = Soil), size = 3, color = "black") +
+  scale_fill_brewer(palette = "Greys",
+                    guide = guide_legend(title.hjust = 0.5,title.position = "top")) +
+  scale_shape_manual(values = c(21,22,24)) +
+  theme_classic() +
+  xlim(c(0,51)) +
+  theme(text = element_text(size = 13),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        legend.position = "top") +
+  coord_flip() +
+  scale_y_reverse()
+
+# Generate dataframe for plotting group boxes
+comps <- phy.ra %>%
+  mutate(Group = paste(Compartment, Treatment, sep = ".")) %>%
+  mutate(Group = fct_relevel(Group, "BS.Ino", "ES.PC", "ES.Ino")) %>%
+  mutate(Group = fct_recode(Group,
+                            "Bulk soil" = "BS.Ino",
+                            "Endosphere SI" = "ES.Ino",
+                            "Endosphere SG" = "ES.PC")) %>%
+  group_by(Group) %>%
+  summarise(min = min(x),
+            max = max(x),
+            mid = max(x) - (max(x) - min(x))/2)
+
+# Plot taxonomy barplots
+taxplot <- ggplot(phy.ra) +
+  geom_bar(aes(x=x, y=RelAb, fill = PhyClass2), stat = "identity") +
+  geom_rect(data = comps, aes(xmin = min - 0.4, xmax = max + 0.4, ymin = -0.025, ymax = -0.15, color = Group)) +
+  geom_text(data = comps, aes(x = mid, y = -0.085, label = Group, color = Group, angle = 270)) +
+  scale_fill_manual(values = phy.pal, name = "Taxon") +
+  scale_color_manual(values = c("#6A3D9A", "#FF7F00", "#FDBF6F"), guide = F) +
+  theme_classic() +
+  xlim(c(0,51)) +
+  ylim(c(-0.2,1)) +
+  theme(text = element_text(size = 13),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        legend.position = "top") +
+  coord_flip() +
+  scale_y_reverse()
+
+
+plot_grid(clad + theme(legend.position = "none"),
+                  taxplot + theme(legend.position = "none"),
+                  ncol = 2,
+                  rel_widths = c(1,2),
+                  align = "h",
+                  axis = "tb")
+
+```
+
+```{r}
+m <- c( "average", "single", "complete", "ward")
+names(m) <- c( "average", "single", "complete", "ward")
+factoextra::fviz_nbclust(dist, FUN = factoextra::hcut, method = "wss")
+# See which method gets you the best clustering
+ac <- function(x) {
+  cluster::agnes(dist, method = x)$ac
+}
+map_dbl(m, ac)
+```
+
+
+```{r}
+clust.method <- "average"
+
+map.bs <- filter(map, Set == "BS")
+map.ei <- filter(map, Set == "ES.Ino")
+map.es <- filter(map, Set == "ES.PC")
+
+dist.bs <- dist[match(map.bs$SampleID, row.names(dist)), match(map.bs$SampleID, colnames(dist))]
+dist.ei <- dist[match(map.ei$SampleID, row.names(dist)), match(map.ei$SampleID, colnames(dist))]
+dist.es <- dist[match(map.es$SampleID, row.names(dist)), match(map.es$SampleID, colnames(dist))]
+
+ddata.bs <- as.dendrogram(hclust(as.dist(dist.bs), method = clust.method)) %>% dendro_data()
+labs.bs <- label(ddata.bs) 
+
+ddata.ei <- as.dendrogram(hclust(as.dist(dist.ei), method = clust.method)) %>% dendro_data()
+labs.ei <- label(ddata.ei) 
+
+ddata.es <- as.dendrogram(hclust(as.dist(dist.es), method = clust.method)) %>% dendro_data()
+labs.es <- label(ddata.es) 
+
+segments.all <- rbind(segment(ddata.bs) %>% mutate(Set = "BS"),
+                      segment(ddata.ei) %>% mutate(Set = "ES.Ino"),
+                      segment(ddata.es) %>% mutate(Set = "ES.PC")) %>% 
+  mutate(Set = fct_recode(Set,
+                          "Bulk soil" = "BS",
+                          "Endosphere SI" = "ES.Ino",
+                          "Endosphere SG" = "ES.PC")) %>%
+  mutate(Set = fct_relevel(Set, "Bulk soil", "Endosphere SG", "Endosphere SI"))
+
+labs.all <- rbind(labs.bs,
+                  labs.ei,
+                  labs.es) %>% 
+  dplyr::rename("SampleID" = "label") %>% 
+  inner_join(map, by = "SampleID") %>% 
+  mutate(Soil = fct_recode(Soil,
+                           Arbuckle = "Arb",
+                           Biggs = "Big",
+                           Davis = "Dav")) %>% 
+  mutate(Set = fct_recode(Set,
+                          "Bulk soil" = "BS",
+                          "Endosphere SI" = "ES.Ino",
+                          "Endosphere SG" = "ES.PC")) %>%
+  mutate(Set = fct_relevel(Set, "Bulk soil", "Endosphere SG", "Endosphere SI"))
+
+
+dendro.soil <- segments.all %>% 
+  ggplot() +
+  geom_segment(aes(x=x, y=y, xend=xend, yend=yend)) +
+  geom_point(data=labs.all,
+             aes(x=x, y=0.05, shape = Soil, fill = Soil), size = 2, color = "black") +
+  scale_fill_brewer(palette = "Set2",
+                    guide = guide_legend(title.hjust = 0.5,title.position = "top")) +
+  scale_shape_manual(values = c(21,22,24)) +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank(),
+        strip.text = element_text(size = 10, colour = "white"),
+        strip.background = element_rect(fill="gray25"),
+        legend.position = "left") +
+  facet_grid(. ~ Set, scales = "free", space = "free")
+
+dendro.soil
+```
+
+```{r}
+occupancy.df <- otu.ra.tidy %>% 
+  inner_join(map.ei, by = "SampleID") %>% 
+  group_by(Soil, OTU_ID) %>% 
+  summarise(Occupancy = sum(Count>0),
+            MeanAb = mean(Count)) %>% 
+  filter(Occupancy > 0)
+
+occupancy.df$OTU_ID %>% unique() %>% length()
+
+core.df <- occupancy.df %>% 
+  filter(Occupancy > 6) %>% 
+  group_by(OTU_ID) %>% 
+  mutate(nSoil = n()) %>% 
+  mutate(Core = nSoil == 3)
+
+occupancy.df %>% 
+  mutate(Prevalent = Occupancy > 6) %>% 
+  group_by(Soil, Prevalent) %>% 
+  dplyr::count()
+
+core.ids <- core.df %>% filter(Core) %>% .$OTU_ID %>% unique()
+saveRDS(core.ids, "../Data/core_otu_ids.RDS")
+
+occupancy.soil <- occupancy.df %>%
+  mutate(Core = OTU_ID %in% filter(core.df, Core)$OTU_ID) %>% 
+  ggplot(aes(MeanAb, Occupancy, color = Soil)) +
+  geom_point(alpha = 0.2) +
+  geom_hline(yintercept = 6.5, linetype = 2) +
+  scale_x_log10() +
+  scale_color_brewer(palette = "Set2") +
+  facet_grid(. ~ Soil) +
+  xlab("Mean relative abundance in ES SI") +
+  ylab("Occupancy in ES SI\n(# samples)") +
+  scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.text = element_text(size = 10, colour = "white"),
+        strip.background = element_rect(fill="gray25"),
+        legend.position = "none")
+
+
+#library(eulerr)
+
+venn.soil <- core.df.venn <- plot(eulerr::venn(list(Arbuckle = filter(core.df, Soil == "Arbuckle")$OTU_ID,
+                Biggs = filter(core.df, Soil == "Biggs")$OTU_ID,
+                Davis = filter(core.df, Soil == "Davis")$OTU_ID)),
+     fills = c("white", "white", "white"),
+     edges = RColorBrewer::brewer.pal(3, "Set2"), lex = 3,
+     labels = list(fontfamily = "Helvetica",
+                   cex = 0),
+     quantities = list(fontfamily = "Helvetica",
+                   cex = 0.8))
+
+
+ab.soil <- otu.ra.tidy %>% 
+  inner_join(map.ei, by = "SampleID") %>% 
+  group_by(Soil, OTU_ID) %>% 
+  summarise(AggRelAb = mean(Count)) %>% 
+  mutate(Core = OTU_ID %in% filter(core.df, Core)$OTU_ID) %>% 
+  filter(OTU_ID %in% filter(core.df, Core)$OTU_ID) %>% 
+  group_by(Soil) %>% 
+  summarise(TotalRelAb = sum(AggRelAb)) %>% 
+  ggplot(aes(Soil, TotalRelAb, fill = Soil)) +
+  geom_bar(stat = "identity") +
+  scale_fill_brewer(palette = "Set2") +
+  ylab("Relative abundance\nof core OTUs in ES SI") +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_blank(),
+        legend.position = "none")
+
+
+ab.soil
+
+
+
+bottom <- plot_grid(occupancy.soil, NA, venn.soil, NA, ab.soil, nrow = 1, rel_widths = c(6,0.5,2,0.5,2.5), align = "h", axis = "b", labels = c("(b)",NA, "(c)",NA,"(d)"), label_size = 15)
+
+#709:408
+plot_grid(dendro.soil, bottom, nrow = 2, labels = c("(a)", NA), label_size = 15, rel_heights = c(2,3))
+```
+
+
+```{r}
+rank.diff <- otu.ra.tidy %>% 
+  group_by(SampleID) %>% 
+  inner_join(map, by = "SampleID") %>% 
+  filter(Compartment == "ES") %>% 
+  group_by(Treatment, Soil, OTU_ID) %>% 
+  summarise(MeanRelAb = mean(Count)) %>% 
+  filter(MeanRelAb > 0) %>% 
+  group_by(Treatment, Soil) %>% 
+  mutate(Rank = rank(-MeanRelAb, ties.method = "first")) %>% 
+  select(-MeanRelAb) %>% 
+  spread(key = Treatment, value = Rank) %>% 
+  mutate(RankDiff = PC - Ino)
+```
+
+```{r}
+rank.pc <- otu.ra.tidy %>% 
+  group_by(SampleID) %>% 
+  inner_join(map, by = "SampleID") %>% 
+  filter(Compartment == "ES") %>% 
+  group_by(Treatment, Soil, OTU_ID) %>% 
+  summarise(MeanRelAb = mean(Count)) %>% 
+  filter(MeanRelAb > 0) %>% 
+  group_by(Treatment, Soil) %>% 
+  mutate(Rank = rank(-MeanRelAb, ties.method = "first")) %>% 
+  filter(Treatment == "PC") %>% 
+  inner_join(select(rank.diff, Soil, OTU_ID, RankDiff), by = c("Soil", "OTU_ID")) %>% 
+  mutate(Control = !is.na(RankDiff)) %>% 
+  arrange(Soil, Rank) %>% 
+  group_by(Soil) %>% 
+  mutate(CumAb = cumsum(MeanRelAb))
+
+rank.pc.thr <- rank.pc  %>% 
+  filter(CumAb > 0.9) %>% 
+  mutate(minRank = min(Rank)) %>% 
+  filter(Rank == minRank)
+
+rank.pc.ratio.all <- rank.pc %>% 
+  group_by(Soil, Control) %>% 
+  dplyr::count() %>% 
+  group_by(Soil) %>% 
+  mutate(Total = sum(n)) %>% 
+  ungroup() %>% 
+  filter(Control) %>% 
+  mutate(AllRatio = paste(n, Total, sep = " / "))
+
+rank.pc.ratio.top <- rank.pc %>% 
+  filter(CumAb <= 0.9) %>% 
+  group_by(Soil, Control) %>% 
+  dplyr::count() %>% 
+  group_by(Soil) %>% 
+  mutate(Total = sum(n)) %>% 
+  ungroup() %>% 
+  filter(Control) %>% 
+  mutate(TopRatio = paste(n, Total, sep = " / "))
+
+rank.pc.ratio <- rank.pc.ratio.all %>% 
+  select(Soil, AllRatio) %>% 
+  inner_join(select(rank.pc.ratio.top, Soil, TopRatio)) %>% 
+  mutate(Ratio = paste("All OTUs: ", AllRatio, "\nTop OTUs: ", TopRatio, sep = ""))
+
+rank.pc.p <- rank.pc %>% 
+  ggplot() +
+  geom_point(aes(Rank, MeanRelAb, color = Control), alpha = 0.5, size = 1) +
+  geom_vline(data = rank.pc.thr, aes(xintercept = Rank), linetype = 2) +
+  geom_text(data = rank.pc.ratio, aes(x = 500, y = 0.05, label = Ratio), size = 3, hjust = 0) +
+  scale_y_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  scale_color_manual(name = "Detected\nin ES SI", values = c("gray50", "#FDBF6F")) +
+  xlab("Abundance rank in ES SG") +
+  ylab("Mean relative abundance\nin ES SG") +
+  facet_grid(. ~ Soil) +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        strip.text = element_blank(),
+        legend.position = "right") 
+  
+
+
+
+rank.pc.hist <- rank.pc %>% 
+  mutate(Control = !is.na(RankDiff)) %>% 
+  ggplot(aes(Rank, fill = Control)) +
+  geom_histogram(binwidth = 20, ) +
+  geom_vline(data = rank.pc.thr, aes(xintercept = Rank), linetype = 2) +
+  scale_fill_manual(name = "Detected\nin ES SI", values = c("gray50", "#FDBF6F")) +
+  facet_grid(. ~ Soil) +
+  ylab("# of OTUs") +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.text = element_text(size = 10, colour = "white"),
+        strip.background = element_rect(fill="gray25"),
+        legend.position = "none")
+
+
+plot_grid(rank.pc.hist, rank.pc.p, nrow =2, align = "v", axis = "lr", rel_heights = c(1,2))
+```
+
+```{r}
+rank.ino <- otu.ra.tidy %>% 
+  group_by(SampleID) %>% 
+  inner_join(map, by = "SampleID") %>% 
+  filter(Compartment == "ES") %>% 
+  group_by(Treatment, Soil, OTU_ID) %>% 
+  summarise(MeanRelAb = mean(Count)) %>% 
+  filter(MeanRelAb > 0) %>% 
+  group_by(Treatment, Soil) %>% 
+  mutate(Rank = rank(-MeanRelAb, ties.method = "first")) %>% 
+  filter(Treatment == "Ino") %>% 
+  inner_join(select(rank.diff, Soil, OTU_ID, RankDiff), by = c("Soil", "OTU_ID")) %>% 
+  mutate(Control = !is.na(RankDiff)) %>% 
+  arrange(Soil, Rank) %>% 
+  group_by(Soil) %>% 
+  mutate(CumAb = cumsum(MeanRelAb))
+
+rank.ino.thr <- rank.ino  %>% 
+  filter(CumAb > 0.9) %>% 
+  mutate(minRank = min(Rank)) %>% 
+  filter(Rank == minRank)
+
+rank.ino.ratio.all <- rank.ino %>% 
+  group_by(Soil, Control) %>% 
+  dplyr::count() %>% 
+  group_by(Soil) %>% 
+  mutate(Total = sum(n)) %>% 
+  ungroup() %>% 
+  filter(Control) %>% 
+  mutate(AllRatio = paste(n, Total, sep = " / "))
+
+rank.ino.ratio.top <- rank.ino %>% 
+  filter(CumAb <= 0.9) %>% 
+  group_by(Soil, Control) %>% 
+  dplyr::count() %>% 
+  group_by(Soil) %>% 
+  mutate(Total = sum(n)) %>% 
+  ungroup() %>% 
+  filter(Control) %>% 
+  mutate(TopRatio = paste(n, Total, sep = " / "))
+
+rank.ino.ratio <- rank.ino.ratio.all %>% 
+  select(Soil, AllRatio) %>% 
+  inner_join(select(rank.ino.ratio.top, Soil, TopRatio)) %>% 
+  mutate(Ratio = paste("All OTUs: ", AllRatio, "\nTop OTUs: ", TopRatio, sep = ""))
+
+rank.ino.p <- rank.ino %>% 
+  ggplot() +
+  geom_point(aes(Rank, MeanRelAb, color = Control), alpha = 0.5, size = 1) +
+  geom_vline(data = rank.ino.thr, aes(xintercept = Rank), linetype = 2) +
+  geom_text(data = rank.ino.ratio, aes(x = 500, y = 0.05, label = Ratio), size = 3, hjust = 0) +
+  scale_y_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  scale_color_manual(name = "Detected\nin ES SG", values = c("gray50", "#FF7F00")) +
+  xlab("Abundance rank in ES SI") +
+  ylab("Mean relative abundance\nin ES SI") +
+  facet_grid(. ~ Soil) +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        strip.text = element_blank(),
+        legend.position = "right")
+
+rank.ino.hist <- rank.ino %>% 
+  mutate(Control = !is.na(RankDiff)) %>% 
+  ggplot(aes(Rank, fill = Control)) +
+  geom_histogram(binwidth = 20, ) +
+  geom_vline(data = rank.ino.thr, aes(xintercept = Rank), linetype = 2) +
+  scale_fill_manual(name = "Detected\nin ES SG", values = c("gray50", "#FF7F00")) +
+  facet_grid(. ~ Soil) +
+  ylab("# of OTUs") +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.text = element_text(size = 10, colour = "white"),
+        strip.background = element_rect(fill="gray25"),
+        legend.position = "none")
+
+
+plot_grid(rank.ino.hist, rank.ino.p, nrow =2, align = "v", axis = "lr", rel_heights = c(1,2))
+
+
+```
+
+```{r}
+es.map <- map %>% 
+  filter(Compartment == "ES") %>% 
+  mutate(Group = paste(Treatment, Soil, sep = "."))
+
+es.otu <- otu[,match(es.map$SampleID, colnames(otu))]
+es.otu <- es.otu[rowSums(es.otu)>0,]
+
+
+# Load into DESeq
+es.dds <- DESeqDataSetFromMatrix(es.otu,
+                                colData = es.map,
+                                design = ~ Group)
+
+es.dds <- DESeq(es.dds)
+
+# Run contrasts
+arb <- lfcShrink(es.dds, contrast = c("Group", "Ino.Arbuckle", "PC.Arbuckle")) %>% tidy() %>% mutate(Soil = "Arbuckle")
+big <- lfcShrink(es.dds, contrast = c("Group", "Ino.Biggs", "PC.Biggs")) %>% tidy() %>% mutate(Soil = "Biggs")
+dav <- lfcShrink(es.dds, contrast = c("Group", "Ino.Davis", "PC.Davis")) %>% tidy() %>% mutate(Soil = "Davis")
+
+# Compile and perform adjustments after pooling all contrasts
+es.res <- rbind(arb, big, dav) %>% 
+  dplyr::rename("OTU_ID" = "gene") %>% 
+  ungroup() %>% 
+  filter(!is.na(p.adjusted)) %>% 
+  mutate(p.adjusted2 = p.adjust(p.value, method = "fdr"))
+
+supp.table <- es.res %>% 
+  filter(p.adjusted2 < 0.05) %>% 
+  mutate(Direction = ifelse(estimate > 0, "Enriched in SI", "Enriched in SG")) %>% 
+  select(Soil, OTU_ID, Direction, everything()) %>% 
+  select(-p.adjusted) %>% 
+  dplyr::rename("p.adjusted" = "p.adjusted2")
+
+write.table(supp.table, "../Tables/supp.dao.si.vs.sg.tsv", quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+
+```{r}
+cor.df <- otu.ra.tidy %>% 
+  group_by(SampleID) %>% 
+  inner_join(map, by = "SampleID") %>% 
+  filter(Compartment == "ES") %>% 
+  group_by(Treatment, Soil, OTU_ID) %>% 
+  summarise(MeanRelAb = mean(Count)) %>% 
+  filter(MeanRelAb > 0) %>% 
+  group_by(Treatment, Soil) %>% 
+  mutate(Rank = rank(-MeanRelAb, ties.method = "first")) %>% 
+  select(-Rank) %>% 
+  spread(key = Treatment, value = MeanRelAb) %>% 
+  filter(!is.na(Ino) & !is.na(PC)) %>% 
+  left_join(es.res, by = c("Soil", "OTU_ID")) %>% 
+  mutate(DAO = case_when(p.adjusted2 < 0.05 ~ TRUE,
+                         p.adjusted2 >= 0.05 ~ FALSE,
+                         is.na(p.adjusted2) ~ FALSE)) 
+
+cor.ratio <- cor.df %>% 
+  group_by(Soil, DAO) %>% 
+  dplyr::count() %>% 
+  group_by(Soil) %>% 
+  mutate(Total = sum(n)) %>% 
+  filter(DAO) %>% 
+  mutate(Ratio = paste(n, Total, sep = " / "))
+
+cor.p <- cor.df %>% 
+  ggplot(aes(Ino, PC)) +
+  geom_point(alpha = 0.5, aes(color = DAO), size = 1) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2) +
+  geom_text(data = cor.ratio, aes(x = 0.00001, y = 0.1, label = Ratio), size = 3, hjust = 0) +
+  scale_x_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  scale_y_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
+  xlab("Mean relative abundance in ES SI") +
+  ylab("Mean relative abundance\nin ES SG") +
+  facet_grid(. ~ Soil) +
+  scale_color_manual(name = "Differentially\nabundant\nSI vs SG", values = c("gray50", "dodgerblue2")) +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        strip.text = element_text(size = 10, colour = "white"),
+        strip.background = element_rect(fill="gray25"))
+
+cor.p
+```
+685:916
+```{r}
+plot_grid(rank.pc.hist, rank.pc.p, rank.ino.hist, rank.ino.p, cor.p, nrow =5, align = "v", axis = "lr", rel_heights = c(1,2,1,2,2), labels = c("(a)", NA, "(b)", NA, "(c)"), label_size = 15)
+```
+
+
+
+```{r}
+otu.ra.tidy %>% 
+  group_by(SampleID) %>% 
+  inner_join(map, by = "SampleID") %>% 
+  filter(Compartment == "ES") %>% 
+  group_by(Treatment, Soil, OTU_ID) %>% 
+  summarise(MeanRelAb = mean(Count)) %>% 
+  filter(MeanRelAb > 0) %>% 
+  group_by(Treatment, Soil) %>% 
+  mutate(Rank = rank(-MeanRelAb, ties.method = "first")) %>% 
+  filter(Treatment == "PC") %>% 
+  inner_join(select(rank.diff, Soil, OTU_ID, RankDiff), by = c("Soil", "OTU_ID")) %>% 
+  mutate(Control = !is.na(RankDiff)) %>% 
+  arrange(Soil, Rank) %>% 
+  group_by(Soil) %>% 
+  mutate(CumAb = cumsum(MeanRelAb)) %>% 
+  filter(CumAb > 0.9) %>% 
+  mutate(minRank = min(Rank)) %>% 
+  filter(Rank == minRank)
+```
+
+
+
+
+
+```{r}
+# Run hierarchical clustring
+dd.row <- as.dendrogram(hclust(as.dist(dist.bs), method = "average"))
+ddata_x <- dendro_data(dd.row)
+labs <- label(ddata_x) %>% 
+  inner_join(map, by = c("label" = "SampleID"))
+
+# Extract data for plotting dendogram
+dendro.p <- ggplot(segment(ddata_x)) +
+  geom_segment(aes(x=x, y=y, xend=xend, yend=yend))
+
+# Get the labels for the tips of the dendogram
+labs <- label(ddata_x) %>% 
+  inner_join(map, by = c("label" = "SampleID")) %>% 
+  mutate(Soil = fct_recode(Soil,
+                           Arbuckle = "Arb",
+                           Biggs = "Big",
+                           Davis = "Dav")) %>% 
+  mutate(Set = fct_recode(Set,
+                          "BS" = "BS.Ino",
+                          "ES SI" = "ES.Ino",
+                          "ES SG" = "ES.PC")) %>% 
+  mutate(Set = fct_relevel(Set, "BS", "ES SG", "ES SI"))
+
+# Generate a data frame with the relative abundances of each phylum
+phy.ra <- otu %>%
+  tidy_otu() %>% 
+  inner_join(tax) %>% 
+  group_by(SampleID, PhyClass2) %>%
+  summarise(Total = sum(Count)) %>% 
+  group_by(SampleID) %>% 
+  mutate(RelAb = (Total/sum(Total))) %>% 
+  inner_join(map, by = "SampleID") %>% 
+  select(SampleID, PhyClass2, RelAb)
+
+phy.ra <- inner_join(labs, phy.ra,  by = c("label" = "SampleID"))
+
+# Plot dendrogram
+clad <- dendro.p +
+  geom_point(data=labs,
+             aes(x=x, y=0.1, shape = Soil, fill = Soil), size = 3, color = "black") +
+  scale_fill_brewer(palette = "Greys",
+                    guide = guide_legend(title.hjust = 0.5,title.position = "top")) +
+  scale_shape_manual(values = c(21,22,24)) +
+  theme_classic() +
+  xlim(c(0,51)) +
+  theme(text = element_text(size = 13),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        legend.position = "top") +
+  coord_flip() +
+  scale_y_reverse()
+```
+
+Run differential abundance analysis testing the impact of soil type on the abundances of individual OTUs
+```{r}
+# Generate a subset with all the endospheres from soil-inoculated samples
+gnot.map <- filter(map, Set == "ES.Ino") 
+gnot.otu <- otu[,colnames(otu) %in% gnot.map$SampleID]
+gnot.otu <- gnot.otu[,match(gnot.map$SampleID, colnames(gnot.otu))]
+gnot.otu <- gnot.otu[rowSums(gnot.otu)>0,]
+
+# Load to DESeq
+gnot.dds <- DESeqDataSetFromMatrix(gnot.otu,
+                                colData = gnot.map,
+                                design = ~ Soil)
+gnot.dds <- DESeq(gnot.dds, test="LRT", reduced=~1)
+
+#Format results
+gnot.res <- results(gnot.dds) %>% tidy() %>% mutate(Set = "ES.Ino") %>% rename(OTU_ID = "gene")
+gnot.sig <- filter(gnot.res, p.adjusted < 0.05)
+```
+
+Generate supplementary table
+```{r}
+supp.table.otu <- gnot.sig %>% inner_join(tax, by = "OTU_ID") %>% 
+  select(-Set)
+
+write.table(supp.table.otu, "../Tables/supp.dao.tsv", quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+Generate a data frame with the mean relative abundances (z-score) of each OTU
+```{r}
+master.means.tidy <- otu %>%
+  tidy_otu() %>% 
+  inner_join(select(gnot.map, SampleID, Compartment, Treatment, Soil), by = "SampleID") %>% 
+  filter(!is.na(Count)) %>% 
+  filter(OTU_ID %in% gnot.sig$OTU_ID) %>% 
+  group_by(Treatment,OTU_ID) %>% 
+  mutate(zscore = (Count - mean(Count))/sd(Count)) %>% 
+  group_by(Treatment, Soil, OTU_ID) %>% 
+  summarise(MeanZS = mean(zscore)) %>% 
+  ungroup()
+
+
+# Create a matrix to run hierarchical clustering
+sig.mtx <- master.means.tidy %>% 
+    mutate(Group = paste(Treatment, Soil, sep = ".")) %>% 
+    select(Group, MeanZS, OTU_ID) %>% 
+    spread(key = Group, value = MeanZS)
+sig.mtx <- as.data.frame(sig.mtx) 
+rownames(sig.mtx) <- sig.mtx$OTU_ID 
+sig.mtx <- sig.mtx[,-1] 
+```
+
+Perform hierarchical clustering on the differentiall abundant OTUs
+```{r}
+n.clust <- 5
+
+sig.dist <- dist(as.matrix(sig.mtx)) 
+sig.clust <- hclust(sig.dist, method = "centroid") 
+sig.ord.names <- sig.clust$labels[sig.clust$order] 
+sig.ord <- data.frame(OTU_ID = sig.ord.names, order = 1:length(sig.ord.names))
+
+sig.cut <- cutree(sig.clust[c(1,2,4)], k = n.clust)
+sig.ord$Cluster <- as.factor(sig.cut[sig.ord$OTU_ID])
+
+# Generate a data frame with the order of each OTU based on the hierarchical clustering analysis
+sig.ord <- sig.ord %>% 
+  mutate(Cluster = paste("C", Cluster, sep = "")) %>% 
+  group_by(Cluster) %>% 
+  mutate(nOTU = n()) %>% 
+  ungroup() %>% 
+  mutate(Cluster2 = paste(Cluster, " (", nOTU, " OTUs)", sep = "")) %>% 
+  mutate(Cluster = fct_recode(Cluster,
+                              "Enriched\nin Biggs" = "C1",
+                              "Enriched\nin Arbuckle" = "C2",
+                              "Enriched\nin Davis" = "C3",
+                              "Depleted\nin Biggs" = "C4",
+                              "Depleted\nin Davis" = "C5")) %>% 
+  mutate(Cluster = fct_relevel(Cluster, "Enriched\nin Arbuckle"))
+
+full.master <- inner_join(master.means.tidy, sig.ord, by = "OTU_ID") 
+
+# Plot mean abundances in a heatmap
+hm <- full.master %>% 
+  mutate(Treatment = fct_recode(Treatment,
+                                "Endosphere SI" = "Ino",
+                                "Endosphere SG" = "PC")) %>% 
+  ggplot(aes(Soil, reorder(OTU_ID, order), fill = MeanZS)) +
+  geom_tile() +
+  scale_fill_gradientn(name = "Abundance\n(z-score)",
+                       breaks = c(-1,0,1),
+                       colors = (RColorBrewer::brewer.pal(9, "Greys")),
+                       guide = guide_colorbar(title.hjust = 1, title.position = "left")) +
+  ylab("Differentially abundant OTU") +
+  xlab("") +
+  facet_grid(Cluster ~ Treatment, scales = "free", space = "free") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line.y = element_blank(),
+        strip.text.y = element_blank(),
+        legend.position = "top")
+hm
+```
+
+Donut plots
+```{r}
+#Calculate the number of OTUs assigned to each cluster
+cluster.total <- sig.ord %>% 
+  group_by(Cluster) %>% 
+  summarise(nOTU = n()) %>% 
+  ungroup() 
+
+# Plot
+donut.p <- sig.ord %>% 
+  inner_join(tax, by = "OTU_ID") %>% 
+  group_by(Cluster, PhyClass2) %>% 
+  summarise(Count = n()) %>% 
+  group_by(Cluster) %>% 
+  mutate(Fraction = Count / sum(Count)) %>% 
+  mutate(ymax = cumsum(Fraction),
+         nPhy = n()) %>% 
+  mutate(ymin = c(0, ymax[1:nPhy - 1])) %>% 
+  ggplot() +
+  geom_rect(aes(ymax=ymax, ymin=ymin, xmax= 4, xmin= 3, fill= PhyClass2)) +
+  geom_text(data = cluster.total, aes(2, 0, label = nOTU), size = 4) +
+  scale_fill_manual(name = "Taxon",
+                    values = phy.pal) +
+  guides(fill = guide_legend(ncol = 4)) +
+  coord_polar(theta="y") + 
+  xlim(c(2, 4)) +
+  facet_wrap(. ~ Cluster, ncol = 1, strip.position = "top") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        text = element_text(size = 13),
+        strip.text = element_text(size = 11),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank())
+
+donut.p
+```
+
+Put plot together
+```{r}
+fig3.p <- plot_grid(clad + theme(legend.position = "none"),
+                  taxplot + theme(legend.position = "none"),
+                  hm + theme(legend.position = "none"),
+                  donut.p + theme(legend.position = "none"),
+                  ncol = 4,
+                  rel_widths = c(1,2,1,1),
+                   align = "hv",
+                   axis = "t",
+                  labels = c("A", NA, "B", NA),
+                  label_size = 20)
+
+legend.top <- plot_grid(get_legend(clad), get_legend(hm), nrow = 1)
+legend.bottom <- plot_grid(get_legend(donut.p), nrow = 1)
+
+fig3.leg <- plot_grid(legend.top,legend.bottom, ncol = 1)
+
+fig3.p ## 676:700
+fig3.leg
+```
+
+Plot the aggregated relative abundances of each cluster across all soils
+```{r}
+clust.tax.p <- otu.ra.tidy %>% 
+  inner_join(sig.ord, by = "OTU_ID") %>% 
+  inner_join(gnot.map, by = "SampleID") %>% 
+  group_by(Cluster, Soil, OTU_ID) %>% 
+  summarise(MeanRelAb = mean(Count)) %>% 
+  inner_join(tax, by = "OTU_ID") %>% 
+  group_by(Soil, PhyClass2, Cluster) %>% 
+  summarise(MeanRelAb = sum(MeanRelAb)) %>% 
+  ggplot(aes(Soil, MeanRelAb, fill = PhyClass2)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = phy.pal, name = "Taxon") +
+  facet_grid(. ~ Cluster) +
+  #facet_wrap(~ Cluster) +
+  ylab("Mean relative abundance") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        strip.text = element_text(size = 12, colour = "white"),
+        strip.background = element_rect(fill="gray25"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_blank(),
+        legend.position = "right")
+
+clust.tax.p
+```
+Plot the distribution of abundance ranks across each cluster across all three soils
+```{r}
+# Calculate the ranks
+oc.ab.df <- otu.ra.tidy %>% 
+  filter(Count > 0) %>% 
+  inner_join(map, by = "SampleID") %>% 
+  filter(Treatment == "Ino" & Compartment == "ES") %>% 
+  group_by(OTU_ID, Soil) %>%
+  summarise(MeanAbundance = mean(Count),
+            Occupancy = sum(Count > 0)) %>% 
+  group_by(Soil) %>% 
+  mutate(Rank = rank(-MeanAbundance, ties.method = "first"))
+
+oc.ab.clstr <- oc.ab.df %>% inner_join(sig.ord)
+
+# Plot
+rank.p <- oc.ab.df %>% 
+  ggplot(aes(Rank)) +
+  geom_rug() +
+  geom_density(data = filter(oc.ab.clstr, MeanAbundance > 0), aes(color = Cluster), size = 1, alpha = 0.8) +
+  geom_rug(data = filter(oc.ab.clstr), aes(color = Cluster)) +
+  facet_grid(. ~ Soil, scales = "free") +
+  xlab("Mean abundance rank") +
+  ylab("Density") +
+  scale_color_manual(values = c(brewer.pal(3,"GnBu"), brewer.pal(3, "PuRd")[c(2,3)])) +
+  theme_dark() +
+  theme(text = element_text(size = 13),
+        strip.text = element_text(size = 12, colour = "white"),
+        strip.background = element_rect(fill="gray25"))
+
+rank.p
+```
+
+Plot supplementary figure
+```{r}
+plot_grid(rank.p, clust.tax.p,ncol = 1,
+          align = "v", axis ="lr", rel_heights = c(4,5),
+          labels = c("A", "B"), label_size = 20)
+```
+
+

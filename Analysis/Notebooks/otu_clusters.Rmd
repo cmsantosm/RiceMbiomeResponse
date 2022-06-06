@@ -112,7 +112,7 @@ ord$Cluster <- as.factor(sig.cut[ord$OTU_ID])
 
 # Generate a data frame with the order of each OTU based on the hierarchical clustering analysis
 ord <- ord %>% 
-  mutate(Cluster = paste("OTU Module ", Cluster, sep = "")) %>% 
+  mutate(Cluster = paste("OTU Cluster ", Cluster, sep = "")) %>% 
   group_by(Cluster) %>% 
   mutate(nOTU = n()) %>% 
   ungroup() %>% 
@@ -158,13 +158,13 @@ master <- inner_join(zs.tidy, ord, by = "OTU_ID") %>%
 
 # Plot mean abundances in a heatmap
 hm <- master %>% 
-  mutate(zscore = ifelse(zscore > 2, 2, zscore)) %>% 
+  mutate(zscore = ifelse(abs(zscore) > 2, 2 * sign(zscore), zscore)) %>% 
   mutate(Treatment = fct_recode(Treatment,
                                 "Endosphere SI" = "Ino",
                                 "Endosphere SG" = "PC")) %>% 
   ggplot(aes(reorder(paste(Soil,SampleID), SampleOrder), reorder(OTU_ID, order), fill = zscore)) +
   geom_tile() +
-  scale_fill_distiller(palette = "Greys", direction = 1,
+  scale_fill_distiller(palette = "RdGy", direction = 1,
                        name = "Abundance\nin ES SI\n(z-score)",
                        guide = guide_colorbar(title.hjust = 1, title.position = "left"),
                        limits = c(-2,2)) +
@@ -172,17 +172,19 @@ hm <- master %>%
   xlab("") +
   facet_grid(Cluster2 ~ ., scales = "free", space = "free") +
   theme_bw() +
-  theme(text = element_text(size = 11),
+  theme(text = element_text(size = 10),
         axis.text = element_blank(),
         axis.title.x = element_blank(), 
         axis.ticks = element_blank(),
         axis.line.y = element_blank(),
         panel.grid = element_blank(),
-         strip.text = element_text(size = 9, colour = "white"),
+        strip.text = element_text(size = 7, colour = "white"),
         strip.background = element_rect(fill="gray25"),
         legend.position = "bottom")
 
 mb.dendro.p <- cowplot::plot_grid(dendro + theme(legend.position = "none"), hm, ncol = 1, align = "v", axis = "lr", rel_heights = c(2,7))
+
+mb.dendro.p
 ```
 
 Generate supplementary table
@@ -217,8 +219,9 @@ clust.ab <- otu %>%
   inner_join(map, by = "SampleID") %>% 
   group_by(Cluster, Soil, OTU_ID) %>% 
   summarise(MeanRelAb = mean(Count)) %>% 
+  mutate(Core = ifelse(OTU_ID %in% core.ids, "Core OTUs", "Non-Core OTUs")) %>% 
   inner_join(tax, by = "OTU_ID") %>% 
-  group_by(Soil, PhyClass2, Cluster) %>% 
+  group_by(Soil, PhyClass2, Cluster, Core) %>% 
   summarise(MeanRelAb = sum(MeanRelAb))
 
 clust.ab %>% 
@@ -227,10 +230,10 @@ clust.ab %>%
 
 #Plot the abundances colored by taxonomies
 clust.tax.p <- clust.ab %>% 
-  ggplot(aes(Soil, MeanRelAb, fill = PhyClass2)) +
+  ggplot(aes(Core, MeanRelAb, fill = PhyClass2)) +
   geom_bar(stat = "identity") +
   scale_fill_manual(values = phy.pal, name = "Taxon") +
-  facet_grid(. ~ Cluster) +
+  facet_grid(. ~ Cluster + Soil) +
   #facet_wrap(~ Cluster) +
   ylab("Relative abundance in ES SI") +
   theme_bw() +
@@ -240,6 +243,8 @@ clust.tax.p <- clust.ab %>%
         axis.text.x = element_text(angle = 45, hjust = 1),
         axis.title.x = element_blank(),
         legend.position = "right")
+
+clust.tax.p 
 
 #Calculate abundance ranks in each soil
 oc.ab.df <-  otu %>% 
@@ -274,7 +279,7 @@ rank.p <- oc.ab.df %>%
 
 Plot it together
 ```{r}
-#641:528
+#758:575
 plot_grid(rank.p, clust.tax.p,ncol = 1,
           align = "v", axis ="lr", rel_heights = c(4,5),
           labels = c("(a)", "(b)"), label_size = 15)

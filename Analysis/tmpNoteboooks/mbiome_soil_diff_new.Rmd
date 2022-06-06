@@ -1,0 +1,384 @@
+Load libraries
+```{r}
+library(DESeq2)
+library(biobroom)
+library(ggdendro)
+library(vegan)
+library(RColorBrewer)
+library(cowplot)
+library(tidyverse)
+
+source("../../General/rmb_functions.R")
+source("../../General/parameters.R")
+```
+
+Load data
+```{r}
+map <- readRDS("../Data/GNOTO_MB_map.RDS") %>% 
+  filter(Treatment != "NC") %>% 
+  mutate(Set = case_when(Compartment == "BS" ~ "BS",
+                         Compartment == "ES" & Treatment == "PC" ~ "ES.PC",
+                         Compartment == "ES" & Treatment == "Ino" ~ "ES.Ino"))
+
+otu <- readRDS("../Data/SILVAcr_otu.RDS")
+tax <- readRDS("../Data/SILVAcr_tax.RDS")
+
+# Remove low prevalent OTUs (occupancy < 5% samples)
+otu <- otu[,colnames(otu) %in% map$SampleID]
+otu <- otu[rowSums(otu) > 0.05*ncol(otu),]
+```
+
+Get relative abundances and top phyla
+```{r}
+# Calculate relative abundances
+otu.ra <- rel_ab(otu)
+otu.ra.tidy <- tidy_otu(otu.ra)
+
+# Get top 11 phyla
+tax <- expand_proteo(tax)
+top.tax <- get_top_taxa(otu.ra, tax, rank = "PhyClass", n = 11)
+tax <- collapse_other(tax, top.tax)
+
+# Pool all other taxa into a "low abundance" category
+tax <- tax %>% 
+  mutate(PhyClass2 = fct_recode(PhyClass2, "Low abundance" = "other")) %>% 
+  mutate(PhyClass2 = fct_relevel(PhyClass2, "Low abundance"))
+```
+
+Calculate Bray-Curtis dissimilarities
+```{r}
+dist <- beta_div_dist(otu.ra %>% log_norm)
+```
+
+
+
+Run differential abundance analysis testing the impact of soil type on the abundances of individual OTUs
+```{r}
+# Generate a subset with all the endospheres from soil-inoculated samples
+gnot.map <- filter(map, Set == "ES.Ino") 
+gnot.otu <- otu[,colnames(otu) %in% gnot.map$SampleID]
+gnot.otu <- gnot.otu[,match(gnot.map$SampleID, colnames(gnot.otu))]
+gnot.otu <- gnot.otu[rowSums(gnot.otu)>0,]
+
+# Load to DESeq
+gnot.dds <- DESeqDataSetFromMatrix(gnot.otu,
+                                colData = gnot.map,
+                                design = ~ Soil)
+gnot.dds <- DESeq(gnot.dds, test="LRT", reduced=~1)
+
+#Format results
+gnot.res <- results(gnot.dds) %>% tidy() %>% mutate(Set = "ES.Ino") %>% rename(OTU_ID = "gene")
+gnot.sig <- filter(gnot.res, p.adjusted < 0.05)
+```
+
+Generate supplementary table
+```{r}
+supp.table.otu <- gnot.sig %>% inner_join(tax, by = "OTU_ID") %>% 
+  select(-Set)
+
+write.table(supp.table.otu, "../Tables/supp.dao.tsv", quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+Generate a data frame with the mean relative abundances (z-score) of each OTU
+```{r}
+zscore.tidy <- otu %>%
+  rel_ab() %>% 
+  log_norm() %>% 
+  tidy_otu() %>% 
+  inner_join(select(gnot.map, SampleID, Compartment, Treatment, Soil), by = "SampleID") %>% 
+  filter(!is.na(Count)) %>% 
+  filter(OTU_ID %in% gnot.sig$OTU_ID) %>% 
+  group_by(Treatment,OTU_ID) %>% 
+  mutate(zscore = (Count - mean(Count))/sd(Count)) %>% 
+  #mutate(zscore = Count) %>% 
+  ungroup() 
+
+# Create a matrix to run hierarchical clustering
+sig.mtx <- zscore.tidy %>% 
+    select(OTU_ID, SampleID, zscore) %>% 
+    spread(key = SampleID, value = zscore)
+sig.mtx <- as.data.frame(sig.mtx) 
+rownames(sig.mtx) <- sig.mtx$OTU_ID 
+sig.mtx <- sig.mtx[,-1] 
+```
+
+Perform hierarchical clustering on the differentiall abundant OTUs
+```{r}
+n.clust <- 3
+
+sig.dist <- dist(as.matrix(sig.mtx)) 
+sig.clust <- hclust(sig.dist, method = "ward.D") 
+sig.ord.names <- sig.clust$labels[sig.clust$order] 
+sig.ord <- data.frame(OTU_ID = sig.ord.names, order = 1:length(sig.ord.names))
+
+sig.cut <- cutree(sig.clust[c(1,2,4)], k = n.clust)
+sig.ord$Cluster <- as.factor(sig.cut[sig.ord$OTU_ID])
+
+n.clust <- 3
+
+sample.dist <- dist(t(as.matrix(sig.mtx))) 
+sample.clust <- hclust(sample.dist, method = "ward.D") 
+sample.ord.names <- sample.clust$labels[sample.clust$order] 
+sample.ord <- data.frame(SampleID = sample.ord.names, SampleOrder = 1:length(sample.ord.names))
+
+sample.cut <- cutree(sample.clust[c(1,2,4)], k = n.clust)
+sample.ord$SampleCluster <- as.factor(sample.cut[sample.ord$SampleID])
+
+# Generate a data frame with the order of each OTU based on the hierarchical clustering analysis
+sig.ord <- sig.ord %>% 
+  mutate(Cluster = paste("C", Cluster, sep = "")) %>% 
+  group_by(Cluster) %>% 
+  mutate(nOTU = n()) %>% 
+  ungroup() %>% 
+  mutate(Cluster2 = paste(Cluster, " (", nOTU, " OTUs)", sep = "")) #%>% 
+  # mutate(Cluster = fct_recode(Cluster,
+  #                             "Enriched\nin Biggs" = "C1",
+  #                             "Enriched\nin Arbuckle" = "C2",
+  #                             "Enriched\nin Davis" = "C3",
+  #                             "Depleted\nin Biggs" = "C4",
+  #                             "Depleted\nin Davis" = "C5")) %>% 
+  # mutate(Cluster = fct_relevel(Cluster, "Enriched\nin Arbuckle"))
+
+full.master <- inner_join(zscore.tidy, sig.ord, by = "OTU_ID") %>% 
+  inner_join(sample.ord, by = "SampleID")
+
+# Plot mean abundances in a heatmap
+hm <- full.master %>% 
+  mutate(zscore = ifelse(zscore > 2, 2, zscore)) %>% 
+  mutate(Treatment = fct_recode(Treatment,
+                                "Endosphere SI" = "Ino",
+                                "Endosphere SG" = "PC")) %>% 
+  ggplot(aes(reorder(paste(Soil,SampleID), SampleOrder), reorder(OTU_ID, order), fill = zscore)) +
+  geom_tile() +
+  scale_fill_gradientn(name = "Abundance\n(z-score)",
+                       #breaks = c(-1,0,1),
+                       colors = (RColorBrewer::brewer.pal(9, "Greys")),
+                       guide = guide_colorbar(title.hjust = 1, title.position = "left")) +
+  ylab("Differentially abundant OTU") +
+  xlab("") +
+  facet_grid(Cluster ~ SampleCluster, scales = "free", space = "free") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line.y = element_blank(),
+        #strip.text.y = element_blank(),
+        legend.position = "top")
+hm
+```
+```{r}
+library(Pigengene)
+
+eigen.otu <- otu %>%
+   rel_ab() %>% 
+   log_norm()
+
+#eigen.otu <- sig.mtx
+
+eigen.otu <- eigen.otu[row.names(eigen.otu) %in% gnot.sig$OTU_ID, match(gnot.map$SampleID, colnames(eigen.otu))]
+# eigen.otu <- eigen.otu[, match(gnot.map$SampleID, colnames(eigen.otu))]
+# eigen.otu <- eigen.otu[rowSums(eigen.otu)>0,]
+eigen.otu <- t(eigen.otu)
+
+eigen.labels <- gnot.map$Soil
+names(eigen.labels) <- gnot.map$SampleID
+Soils <- as.data.frame(eigen.labels)
+
+pheatmap.type(eigen.otu,annRow=Soils,show_rownames=FALSE)
+
+
+checked <- check.pigengene.input(Data=eigen.otu, Labels=eigen.labels)
+DataI <- checked$Data
+LabelsI <- checked$Labels
+
+LabelsI
+wData <- balance(Data=DataI, Labels=LabelsI, verbose=1)$balanced
+
+betaI <- calculate.beta(RsquaredCut=0.5, Data=wData, verbose=1)$power
+betaI <- calculate.beta(Data=wData, verbose=1)$power
+
+wgRes <- wgcna.one.step(Data=wData, seed=1, power=betaI,verbose=1)
+wgRes
+
+pigengene <- compute.pigengene(Data=DataI, Labels=LabelsI,modules=wgRes$modules, verbose=1, doPlot = FALSE)
+
+ordmod <- pigengene$orderedModules
+htl <- pigengene$heavyToLow
+
+eigen.clust <- data.frame(OTU_ID = names(ordmod),
+           Cluster = ordmod)
+
+eigen.ord <- data.frame(OTU_ID = htl,
+           Order = 1:length(htl))
+
+eigen.final <- inner_join(eigen.clust, eigen.ord, by = "OTU_ID") %>% arrange(Order)
+
+full.master <- inner_join(zscore.tidy, eigen.final, by = "OTU_ID") %>% 
+  inner_join(sample.ord, by = "SampleID")
+
+# Plot mean abundances in a heatmap
+full.master %>% 
+  mutate(zscore = ifelse(zscore > 1.5, 1.5, zscore)) %>% 
+  # mutate(Treatment = fct_recode(Treatment,
+  #                               "Endosphere SI" = "Ino",
+  #                               "Endosphere SG" = "PC")) %>% 
+  # ggplot(aes(SampleID, reorder(OTU_ID, Order), fill = zscore)) +
+  # geom_tile()
+  ggplot(aes(reorder(paste(Soil,SampleID), SampleOrder), reorder(OTU_ID, Order), fill = zscore)) +
+  geom_tile() +
+  scale_fill_gradientn(name = "Abundance\n(z-score)",
+                       #breaks = c(-1,0,1),
+                       colors = (RColorBrewer::brewer.pal(9, "Blues")),
+                       guide = guide_colorbar(title.hjust = 1, title.position = "left")) +
+  ylab("Differentially abundant OTU") +
+  xlab("") +
+  facet_grid(Cluster ~ SampleCluster, scales = "free", space = "free") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.line.y = element_blank())
+        #strip.text.y = element_blank(),
+
+
+pigengene$pvalues
+
+powers = c(c(1:10), seq(from = 12, to=20, by=2))
+
+WGCNA::pickSoftThreshold(DataI, powerVector = powers, verbose = 5)
+```
+
+
+
+Donut plots
+```{r}
+#Calculate the number of OTUs assigned to each cluster
+cluster.total <- sig.ord %>% 
+  group_by(Cluster) %>% 
+  summarise(nOTU = n()) %>% 
+  ungroup() 
+
+# Plot
+donut.p <- sig.ord %>% 
+  inner_join(tax, by = "OTU_ID") %>% 
+  group_by(Cluster, PhyClass2) %>% 
+  summarise(Count = n()) %>% 
+  group_by(Cluster) %>% 
+  mutate(Fraction = Count / sum(Count)) %>% 
+  mutate(ymax = cumsum(Fraction),
+         nPhy = n()) %>% 
+  mutate(ymin = c(0, ymax[1:nPhy - 1])) %>% 
+  ggplot() +
+  geom_rect(aes(ymax=ymax, ymin=ymin, xmax= 4, xmin= 3, fill= PhyClass2)) +
+  geom_text(data = cluster.total, aes(2, 0, label = nOTU), size = 4) +
+  scale_fill_manual(name = "Taxon",
+                    values = phy.pal) +
+  guides(fill = guide_legend(ncol = 4)) +
+  coord_polar(theta="y") + 
+  xlim(c(2, 4)) +
+  facet_wrap(. ~ Cluster, ncol = 1, strip.position = "top") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        text = element_text(size = 13),
+        strip.text = element_text(size = 11),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank())
+
+donut.p
+```
+
+Put plot together
+```{r}
+fig3.p <- plot_grid(clad + theme(legend.position = "none"),
+                  taxplot + theme(legend.position = "none"),
+                  hm + theme(legend.position = "none"),
+                  donut.p + theme(legend.position = "none"),
+                  ncol = 4,
+                  rel_widths = c(1,2,1,1),
+                   align = "hv",
+                   axis = "t",
+                  labels = c("A", NA, "B", NA),
+                  label_size = 20)
+
+legend.top <- plot_grid(get_legend(clad), get_legend(hm), nrow = 1)
+legend.bottom <- plot_grid(get_legend(donut.p), nrow = 1)
+
+fig3.leg <- plot_grid(legend.top,legend.bottom, ncol = 1)
+
+fig3.p ## 676:700
+fig3.leg
+```
+
+Plot the aggregated relative abundances of each cluster across all soils
+```{r}
+clust.tax.p <- otu.ra.tidy %>% 
+  inner_join(sig.ord, by = "OTU_ID") %>% 
+  inner_join(gnot.map, by = "SampleID") %>% 
+  group_by(Cluster, Soil, OTU_ID) %>% 
+  summarise(MeanRelAb = mean(Count)) %>% 
+  inner_join(tax, by = "OTU_ID") %>% 
+  group_by(Soil, PhyClass2, Cluster) %>% 
+  summarise(MeanRelAb = sum(MeanRelAb)) %>% 
+  ggplot(aes(Soil, MeanRelAb, fill = PhyClass2)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = phy.pal, name = "Taxon") +
+  facet_grid(. ~ Cluster) +
+  #facet_wrap(~ Cluster) +
+  ylab("Mean relative abundance") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        strip.text = element_text(size = 12, colour = "white"),
+        strip.background = element_rect(fill="gray25"),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_blank(),
+        legend.position = "right")
+
+clust.tax.p
+```
+Plot the distribution of abundance ranks across each cluster across all three soils
+```{r}
+# Calculate the ranks
+oc.ab.df <- otu.ra.tidy %>% 
+  filter(Count > 0) %>% 
+  inner_join(map, by = "SampleID") %>% 
+  filter(Treatment == "Ino" & Compartment == "ES") %>% 
+  group_by(OTU_ID, Soil) %>%
+  summarise(MeanAbundance = mean(Count),
+            Occupancy = sum(Count > 0)) %>% 
+  group_by(Soil) %>% 
+  mutate(Rank = rank(-MeanAbundance, ties.method = "first"))
+
+oc.ab.clstr <- oc.ab.df %>% inner_join(sig.ord)
+
+# Plot
+rank.p <- oc.ab.df %>% 
+  ggplot(aes(Rank)) +
+  geom_rug() +
+  geom_density(data = filter(oc.ab.clstr, MeanAbundance > 0), aes(color = Cluster), size = 1, alpha = 0.8) +
+  geom_rug(data = filter(oc.ab.clstr), aes(color = Cluster)) +
+  facet_grid(. ~ Soil, scales = "free") +
+  xlab("Mean abundance rank") +
+  ylab("Density") +
+  scale_color_manual(values = c(brewer.pal(3,"GnBu"), brewer.pal(3, "PuRd")[c(2,3)])) +
+  theme_dark() +
+  theme(text = element_text(size = 13),
+        strip.text = element_text(size = 12, colour = "white"),
+        strip.background = element_rect(fill="gray25"))
+
+rank.p
+```
+
+Plot supplementary figure
+```{r}
+plot_grid(rank.p, clust.tax.p,ncol = 1,
+          align = "v", axis ="lr", rel_heights = c(4,5),
+          labels = c("A", "B"), label_size = 20)
+```
+
+

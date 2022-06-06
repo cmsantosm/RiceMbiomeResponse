@@ -432,7 +432,9 @@ supp.table <- es.res %>%
   mutate(Direction = ifelse(estimate > 0, "Enriched in SI", "Enriched in SG")) %>% 
   select(Soil, OTU_ID, Direction, everything()) %>% 
   select(-p.adjusted) %>% 
-  dplyr::rename("p.adjusted" = "p.adjusted2")
+  dplyr::rename("p.adjusted" = "p.adjusted2") %>% 
+  inner_join(tax, by = "OTU_ID") %>% 
+  select(-Assignment, -PhyClass, -PhyClass2)
 
 write.table(supp.table, "../Tables/supp.dao.si.vs.sg.tsv", quote = F, sep = "\t", row.names = F, col.names = T)
 ```

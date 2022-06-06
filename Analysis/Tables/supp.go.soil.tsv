@@ -1,27 +1,27 @@
 Annotation	Cluster	ID	Description	GeneUniverse	GeneSet	Expected	p.adjusted
-Biological Process	Gene Module 1	GO:0006464	cellular protein modification process	2279	98	72.05	0.00088
-Biological Process	Gene Module 1	GO:0009606	tropism	66	8	2.09	0.00109
-Biological Process	Gene Module 1	GO:0008219	cell death	296	19	9.36	0.00289
-Biological Process	Gene Module 1	GO:0016049	cell growth	345	21	10.91	0.00335
-Biological Process	Gene Module 1	GO:0009607	response to biotic stimulus	786	39	24.85	0.00376
-Biological Process	Gene Module 1	GO:0008152	metabolic process	10924	377	345.34	1.2e-05
-Biological Process	Gene Module 1	GO:0006950	response to stress	2679	105	84.69	0.01051
-Biological Process	Gene Module 1	GO:0009653	anatomical structure morphogenesis	659	31	20.83	0.01837
-Biological Process	Gene Module 1	GO:0009719	response to endogenous stimulus	1086	45	34.33	0.03855
-Biological Process	Gene Module 2	GO:0009056	catabolic process	1189	64	30.25	1e-08
-Biological Process	Gene Module 2	GO:0009719	response to endogenous stimulus	1086	47	27.63	0.00026
-Biological Process	Gene Module 2	GO:0009628	response to abiotic stimulus	1622	64	41.26	0.00028
-Biological Process	Gene Module 2	GO:0005975	carbohydrate metabolic process	807	36	20.53	0.00082
-Biological Process	Gene Module 2	GO:0006950	response to stress	2679	88	68.15	0.00638
-Biological Process	Gene Module 2	GO:0006139	nucleobase-containing compound metabolic...	3096	96	78.76	0.00578
-Biological Process	Gene Module 2	GO:0040029	regulation of gene expression, epigeneti...	111	7	2.82	0.02332
-Biological Process	Gene Module 2	GO:0009607	response to biotic stimulus	786	29	20	0.02947
-Biological Process	Gene Module 2	GO:0030154	cell differentiation	379	16	9.64	0.0339
-Biological Process	Gene Module 2	GO:0009991	response to extracellular stimulus	185	9	4.71	0.04745
-Molecular Function	Gene Module 1	GO:0003824	catalytic activity	7610	302	237.08	0.0021
-Molecular Function	Gene Module 1	GO:0016301	kinase activity	1508	85	46.98	5.5e-08
-Molecular Function	Gene Module 1	GO:0016787	hydrolase activity	2448	93	76.27	0.0048
-Molecular Function	Gene Module 1	GO:0005488	binding	8229	258	256.37	0.0079
-Molecular Function	Gene Module 2	GO:0016787	hydrolase activity	2448	85	63.38	0.004
-Molecular Function	Gene Module 2	GO:0003700	DNA-binding transcription factor activit...	1286	47	33.29	0.011
-Molecular Function	Gene Module 2	GO:0019825	oxygen binding	208	11	5.38	0.02
+Biological Process	Gene Cluster 1	GO:0006464	cellular protein modification process	2279	98	72.05	0.00088
+Biological Process	Gene Cluster 1	GO:0009606	tropism	66	8	2.09	0.00109
+Biological Process	Gene Cluster 1	GO:0008219	cell death	296	19	9.36	0.00289
+Biological Process	Gene Cluster 1	GO:0016049	cell growth	345	21	10.91	0.00335
+Biological Process	Gene Cluster 1	GO:0009607	response to biotic stimulus	786	39	24.85	0.00376
+Biological Process	Gene Cluster 1	GO:0008152	metabolic process	10924	377	345.34	1.2e-05
+Biological Process	Gene Cluster 1	GO:0006950	response to stress	2679	105	84.69	0.01051
+Biological Process	Gene Cluster 1	GO:0009653	anatomical structure morphogenesis	659	31	20.83	0.01837
+Biological Process	Gene Cluster 1	GO:0009719	response to endogenous stimulus	1086	45	34.33	0.03855
+Biological Process	Gene Cluster 2	GO:0009056	catabolic process	1189	64	30.25	1e-08
+Biological Process	Gene Cluster 2	GO:0009719	response to endogenous stimulus	1086	47	27.63	0.00026
+Biological Process	Gene Cluster 2	GO:0009628	response to abiotic stimulus	1622	64	41.26	0.00028
+Biological Process	Gene Cluster 2	GO:0005975	carbohydrate metabolic process	807	36	20.53	0.00082
+Biological Process	Gene Cluster 2	GO:0006950	response to stress	2679	88	68.15	0.00638
+Biological Process	Gene Cluster 2	GO:0006139	nucleobase-containing compound metabolic...	3096	96	78.76	0.00578
+Biological Process	Gene Cluster 2	GO:0040029	regulation of gene expression, epigeneti...	111	7	2.82	0.02332
+Biological Process	Gene Cluster 2	GO:0009607	response to biotic stimulus	786	29	20	0.02947
+Biological Process	Gene Cluster 2	GO:0030154	cell differentiation	379	16	9.64	0.0339
+Biological Process	Gene Cluster 2	GO:0009991	response to extracellular stimulus	185	9	4.71	0.04745
+Molecular Function	Gene Cluster 1	GO:0003824	catalytic activity	7610	302	237.08	0.0021
+Molecular Function	Gene Cluster 1	GO:0016301	kinase activity	1508	85	46.98	5.5e-08
+Molecular Function	Gene Cluster 1	GO:0016787	hydrolase activity	2448	93	76.27	0.0048
+Molecular Function	Gene Cluster 1	GO:0005488	binding	8229	258	256.37	0.0079
+Molecular Function	Gene Cluster 2	GO:0016787	hydrolase activity	2448	85	63.38	0.004
+Molecular Function	Gene Cluster 2	GO:0003700	DNA-binding transcription factor activit...	1286	47	33.29	0.011
+Molecular Function	Gene Cluster 2	GO:0019825	oxygen binding	208	11	5.38	0.02

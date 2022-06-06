@@ -1,0 +1,514 @@
+Load libraries
+```{r}
+library(topGO)
+library(DESeq2)
+library(vegan)
+library(ggdendro)
+library(cowplot)
+library(tidyverse)
+source("../../General/rmb_functions.R")
+```
+
+Load data
+```{r}
+map <- readRDS("../Data/RNASeq_map.RDS")
+dds <- readRDS("../Data/msu_dds.RDS")
+```
+
+Normalize gene count table, calculate Euclidean distances, and subset by tissue and inoculation type
+```{r}
+# Normalization
+vsd <- vst(dds, blind = FALSE)
+
+# Euclidean distances
+sample.dist <- dist(t(assay(vsd)))
+sample.dist <- as.matrix(sample.dist)
+
+# Subsetting
+root.ino.map <- filter(map, Treatment == "Ino" & Tissue == "Root")
+root.nc.map <- filter(map, Treatment == "NC" & Tissue == "Root")
+leaf.ino.map <- filter(map, Treatment == "Ino" & Tissue == "Leaf")
+leaf.nc.map <- filter(map, Treatment == "NC" & Tissue == "Leaf")
+
+root.ino.dist <- sample.dist[match(root.ino.map$SampleID, row.names(sample.dist)), match(root.ino.map$SampleID, colnames(sample.dist))]
+root.nc.dist <- sample.dist[match(root.nc.map$SampleID, row.names(sample.dist)), match(root.nc.map$SampleID, colnames(sample.dist))]
+leaf.ino.dist <- sample.dist[match(leaf.ino.map$SampleID, row.names(sample.dist)), match(leaf.ino.map$SampleID, colnames(sample.dist))]
+leaf.nc.dist <- sample.dist[match(leaf.nc.map$SampleID, row.names(sample.dist)), match(leaf.nc.map$SampleID, colnames(sample.dist))]
+```
+
+PerMANOVA testing effect of soil type on transcriptome composition for each
+```{r}
+root.ino.pm <- adonis(as.dist(root.ino.dist) ~ Soil, root.ino.map) %>% .$aov.tab %>% broom::tidy() %>% mutate(Tissue = "Root", Treatment = "Ino")
+root.nc.pm <- adonis(as.dist(root.nc.dist) ~ Soil, root.nc.map) %>% .$aov.tab %>% broom::tidy() %>% mutate(Tissue = "Root", Treatment = "NC")
+leaf.ino.pm <- adonis(as.dist(leaf.ino.dist) ~ Soil, leaf.ino.map) %>% .$aov.tab %>% broom::tidy() %>% mutate(Tissue = "Leaf", Treatment = "Ino")
+leaf.nc.pm <- adonis(as.dist(leaf.nc.dist) ~ Soil, leaf.nc.map) %>% .$aov.tab %>% broom::tidy() %>% mutate(Tissue = "Leaf", Treatment = "NC")
+
+pm <- rbind(root.ino.pm, root.nc.pm, leaf.ino.pm, leaf.nc.pm) 
+
+pm %>% filter(term == "Soil") %>% group_by(Tissue) %>% mutate(p.adj = p.adjust(p.value))
+```
+
+Generate subsets for each root type to perform PCAs
+```{r}
+root.map <- filter(map, Tissue == "Root")
+leaf.map <- filter(map, Tissue == "Leaf")
+
+root.dist <- sample.dist[match(root.map$SampleID, row.names(sample.dist)), match(root.map$SampleID, colnames(sample.dist))]
+leaf.dist <- sample.dist[match(leaf.map$SampleID, row.names(sample.dist)), match(leaf.map$SampleID, colnames(sample.dist))]
+root.dist[upper.tri(root.dist, diag = F)] <- NA 
+```
+
+Run PCAs
+```{r}
+root.pcoa.axes <- pcoa_axes(as.matrix(root.dist), root.map) 
+root.pcoa.eig <- pcoa_eigval(as.matrix(root.dist), root.map)
+
+root.pca.p <- root.pcoa.axes %>% 
+  mutate(Treatment = fct_recode(Treatment,
+                                "Root SI" = "Ino",
+                                "Root MI" = "NC")) %>% 
+  ggplot(aes(Axis.1, Axis.2)) +
+  ggConvexHull::geom_convexhull(aes(color = Treatment), fill = NA, size = 1) +
+  geom_point(aes(shape = Soil, fill = Soil), size = 3, alpha = 1, color = "black") +
+  scale_fill_brewer(palette = "Greys") +
+  scale_shape_manual(values = c(21,22,24)) +
+  scale_color_manual(values = c("#8C510A", "#DFC27D"), name = "") +
+  xlab(paste0("PC1 (",root.pcoa.eig$Eigval[1],"%)")) +
+  ylab(paste0("PC2 (",root.pcoa.eig$Eigval[2],"%)")) + 
+  guides(fill = guide_legend(ncol = 1)) +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        legend.position = "right")
+
+leaf.pcoa.axes <- pcoa_axes(as.matrix(leaf.dist), leaf.map) 
+leaf.pcoa.eig <- pcoa_eigval(as.matrix(leaf.dist), leaf.map) 
+
+leaf.pca.p <- leaf.pcoa.axes %>% 
+  mutate(Treatment = fct_recode(Treatment,
+                                "Leaf SI" = "Ino",
+                                "Leaf MI" = "NC")) %>% 
+  ggplot(aes(Axis.1, Axis.2)) +
+  ggConvexHull::geom_convexhull(aes(color = Treatment), fill = NA, size = 1) +
+  geom_point(aes(shape = Soil, fill = Soil), size = 3, alpha = 1, color = "black") +
+  scale_fill_brewer(palette = "Greys") +
+  scale_shape_manual(values = c(21,22,24)) +
+  scale_color_manual(values = c("#4D9221", "#B8E186"), name = "Set") +
+  xlab(paste0("PC1 (",leaf.pcoa.eig$Eigval[1],"%)")) +
+  ylab(paste0("PC2 (",leaf.pcoa.eig$Eigval[2],"%)")) + 
+  guides(fill = guide_legend(ncol = 1)) +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        legend.position = "right")
+
+root.pca.p
+leaf.pca.p
+```
+
+Compare the distribution of Euclidean distances within each inoculation type
+```{r}
+# Generate data frame for root samples
+root.dist[upper.tri(root.dist, diag = F)] <- NA 
+root.dist.tidy <- root.dist %>% 
+  as.data.frame() %>% 
+  mutate(SampleID.x = row.names(.)) %>% 
+  gather(key = "SampleID.y", value = "Distance", -SampleID.x) %>% 
+  inner_join(root.map, by = c("SampleID.x" = "SampleID")) %>% 
+  inner_join(root.map, by = c("SampleID.y" = "SampleID")) %>% 
+  filter(Treatment.x == Treatment.y) %>%
+  filter(!is.na(Distance)) %>% 
+  filter(Distance > 0) 
+
+# t-test for root samples
+root.t <- t.test(filter(root.dist.tidy, Treatment.x == "Ino")$Distance, filter(root.dist.tidy, Treatment.x == "NC")$Distance) %>% broom::tidy()
+
+# Plot for root samples
+root.box.p <- root.dist.tidy %>% 
+  mutate(Treatment.x = fct_recode(Treatment.x,
+                                "Soil\nInoculated" = "Ino",
+                                "Mock\nInoculated" = "NC")) %>% 
+  ggplot(aes(Treatment.x, Distance)) +
+  geom_boxplot(aes(fill = Treatment.x), size = 1) +
+  geom_segment(aes(x = 1, xend = 2, y = 105, yend = 105)) +
+  geom_text(data = root.t, aes(x = 1.5, y = 115, label = paste("t = ", round(statistic,3), "\nP = ", formatC(p.value, format = "e", digits = 3))), hjust = 0.5, vjust = 1, size = 3) +
+  ylab("Pairwise Euclidean distance") +
+  scale_fill_manual(values = c("#8C510A", "#DFC27D"), name = "Set") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        axis.title.x = element_blank(),
+        legend.position = "none")
+
+
+# Generate data frame for leaf samples
+leaf.dist[upper.tri(leaf.dist, diag = F)] <- NA 
+
+# t-test for leaf samples
+leaf.dist.tidy <- leaf.dist %>% 
+  as.data.frame() %>% 
+  mutate(SampleID.x = row.names(.)) %>% 
+  gather(key = "SampleID.y", value = "Distance", -SampleID.x) %>% 
+  inner_join(leaf.map, by = c("SampleID.x" = "SampleID")) %>% 
+  inner_join(leaf.map, by = c("SampleID.y" = "SampleID")) %>% 
+  filter(Treatment.x == Treatment.y) %>% 
+  filter(Distance > 0) 
+
+leaf.t <- t.test(filter(leaf.dist.tidy, Treatment.x == "Ino")$Distance, filter(leaf.dist.tidy, Treatment.x == "NC")$Distance) %>% broom::tidy()
+
+# Plot for root samples
+leaf.box.p <- leaf.dist.tidy %>% 
+  mutate(Treatment.x = fct_recode(Treatment.x,
+                                "Soil\nInoculated" = "Ino",
+                                "Mock\nInoculated" = "NC")) %>% 
+  ggplot() +
+  geom_boxplot(aes(Treatment.x, Distance, fill = Treatment.x), size = 1) +
+  geom_segment(x = 1, xend = 2, y = 115, yend = 115) +
+  geom_text(data = leaf.t, aes(x = 1.5, y = 125, label = paste("t = ", round(statistic,3), "\nP = ", round(p.value, 3))), hjust = 0.5, vjust = 1, size = 3) +
+  ylab("Pairwise Euclidean distance") +
+  scale_fill_manual(values = c("#4D9221", "#B8E186"), name = "") +
+  theme_bw() +
+  theme(text = element_text(size = 13),
+        axis.title.x = element_blank(),
+        legend.position = "none")
+
+root.box.p
+leaf.box.p
+```
+
+Generate supplementary figure 
+```{r}
+plot_grid(root.box.p, root.pca.p, leaf.box.p, leaf.pca.p, nrow = 2, rel_widths = c(1,2), align = "h", axis = "bt", labels = c("A", "B", "C", "D"), label_size = 20)
+```
+
+Load DESeq results testing the effect of soil type on transcriptome composition
+```{r}
+soil.res <- readRDS("../Data/msu_soil_res.RDS") %>%
+  filter(!is.na(p.adjusted))
+
+# Subset the root soil inoculated samples
+root.soil.sig <- soil.res %>%
+  filter(Tissue == "Root") %>% 
+  filter(Treatment == "Ino") %>%
+  filter(p.adjusted < 0.05)
+```
+
+Generate supplementary table with significant genes
+```{r}
+supp.table.deg.soil <- root.soil.sig %>% 
+  dplyr::select(-Tissue, -Treatment)
+
+write.table(supp.table.deg.soil, "../Tables/supp.deg.soil.tsv", quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+Generate a matrix with the zscore expression values to perform hierarchical clustering
+```{r}
+counts <- assay(vsd)
+
+master.tidy <- as.data.frame(counts) %>% 
+  mutate(gene.id = row.names(.)) %>% 
+  gather(key = "SampleID", value = "Counts", - gene.id) %>% 
+  inner_join(dplyr::select(map, Tissue, Soil, Treatment, SampleID), by = "SampleID") %>% 
+  group_by(Tissue, gene.id) %>% 
+  mutate(zscore_tis = (Counts - mean(Counts))/sd(Counts)) %>% 
+  ungroup()
+```
+
+Perform hierarchical clustering on root soil inoculated samples
+```{r}
+mtrx <- master.tidy %>% 
+  ungroup() %>% 
+  filter(Tissue == "Root") %>%  
+  filter(Treatment == "Ino") %>% 
+  filter(gene.id %in% root.soil.sig$gene) %>% 
+  filter(!is.na(zscore_tis)) %>% 
+  dplyr::select(gene.id, SampleID, zscore_tis) %>% 
+  spread(key = SampleID, value = zscore_tis) 
+
+mtrx <- as.data.frame(mtrx)
+rownames(mtrx) <- mtrx$gene.id
+mtrx <- mtrx[,-1]
+dist.tmp <- dist(as.matrix(mtrx))
+dist.clust <- hclust(dist.tmp, method = "average")
+ord.names <- dist.clust$labels[dist.clust$order]
+clust.ord <- data.frame(gene.id = ord.names, gene_order = 1:length(ord.names))
+clust.cut <- cutree(dist.clust[c(1,2,4)], k = 3)
+clust.ord$Cluster <- as.factor(clust.cut[clust.ord$gene.id])
+clust.ord <- clust.ord %>% 
+  mutate(Cluster = fct_recode(Cluster,
+                              "Cluster 2\n(Underexpressed in Davis)" = "2",
+                              "Cluster 1\n(Overexpressed in Davis)" = "1"))
+                        
+sample.clust <- hclust(dist(as.matrix(t(mtrx))), method = "average")
+sample.ord.names <- sample.clust$labels[sample.clust$order]                
+sample.ord <- data.frame(SampleID = sample.ord.names, sample_order = 1:length(sample.ord.names))                        
+```
+
+Plot
+```{r}
+dd.row <- as.dendrogram(sample.clust)
+ddata_x <- dendro_data(dd.row)
+
+dendro.p <- ggplot(segment(ddata_x)) +
+  geom_segment(aes(x=x, y=y, xend=xend, yend=yend)) 
+
+labs <- label(ddata_x) %>% 
+  inner_join(map, by = c("label" = "SampleID")) %>% 
+  mutate(Soil = fct_recode(Soil,
+                           "Arbuckle" = "Arb",
+                           "Biggs" = "Big",
+                           "Davis" = "Dav"),
+         Treatment = fct_recode(Treatment,
+                                "Soil\ninoculated" = "Ino",
+                               "Mock\ninoculated" = "NC"))
+dendro <- dendro.p + 
+  geom_point(data= labs,
+             aes(x=x, y=5, shape = Soil), size = 2, stroke = 1, fill = "#8C510A") +
+  scale_fill_manual(values = c("#8C510A", "#DFC27D"),
+                    guide = guide_legend(title.hjust = 0.5, title.position = "top", ncol = 1)) +
+  scale_shape_manual(name = "", values = c(21,22,24),
+                     guide = guide_legend(title.hjust = 0.5, title.position = "top", nrow = 1)) +
+  theme_classic() +
+  theme(text = element_text(size = 13),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        legend.position = "top") 
+
+heat <- master.tidy %>% 
+  filter(Tissue == "Root") %>%  
+  filter(gene.id %in% root.soil.sig$gene) %>%
+  filter(!is.na(zscore_tis)) %>% 
+  inner_join(clust.ord, by = "gene.id") %>% 
+  inner_join(sample.ord, by = "SampleID") %>% 
+  mutate(zscore_tis2 = ifelse(abs(zscore_tis) > 2, 2*sign(zscore_tis), zscore_tis)) %>% 
+  ggplot(aes(reorder(SampleID, sample_order), reorder(gene.id, gene_order))) +
+  geom_tile(aes(fill = zscore_tis2)) +
+  scale_fill_distiller(palette = "Greys", direction = 1,
+                       name = "Gene expression\n(z-score)",
+                       guide = guide_colorbar(title.hjust = 1, title.position = "left"),
+                       limits = c(-2,2)) +
+  ylab("Differentially expressed gene") +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        axis.text = element_blank(),
+        axis.title.x = element_blank(), 
+        axis.ticks = element_blank(),
+        axis.line.y = element_blank(),
+        panel.grid = element_blank(),
+        strip.text = element_text(size = 9),
+        legend.position = "bottom")
+
+left <- cowplot::plot_grid(dendro + theme(legend.position = "none"), heat + theme(legend.position = "none"), ncol = 1, align = "v", axis = "lr", rel_heights = c(2,7))
+
+left
+```
+Perform hierarchical clustering on root mock inoculated samples using the genes that were found to be differentially expressed on soil-inoculated samples
+```{r}
+mtrx2 <- master.tidy %>% 
+  ungroup() %>% 
+  filter(Tissue == "Root") %>%  #####3
+  filter(Treatment == "NC") %>% #######
+  filter(gene.id %in% root.soil.sig$gene) %>% #######
+  filter(!is.na(zscore_tis)) %>% 
+  dplyr::select(gene.id, SampleID, zscore_tis) %>% 
+  spread(key = SampleID, value = zscore_tis) 
+
+mtrx2 <- as.data.frame(mtrx2)
+rownames(mtrx2) <- mtrx2$gene.id
+mtrx2 <- mtrx2[,-1]
+
+sample.clust2 <- hclust(dist(as.matrix(t(mtrx2))), method = "average")
+sample.ord.names2 <- sample.clust2$labels[sample.clust2$order]                
+sample.ord2 <- data.frame(SampleID = sample.ord.names2, sample_order = 1:length(sample.ord.names2))   
+
+
+dd.row <- as.dendrogram(sample.clust2)
+ddata_x <- dendro_data(dd.row)
+
+dendro.p <- ggplot(segment(ddata_x)) +
+  geom_segment(aes(x=x, y=y, xend=xend, yend=yend)) 
+
+dendro.p
+
+labs <- label(ddata_x) %>% 
+  inner_join(map, by = c("label" = "SampleID")) %>% 
+  mutate(Soil = fct_recode(Soil,
+                           "Arbuckle" = "Arb",
+                           "Biggs" = "Big",
+                           "Davis" = "Dav"),
+         Treatment = fct_recode(Treatment,
+                                "Soil\ninoculated" = "Ino",
+                               "Mock\ninoculated" = "NC"))
+dendro <- dendro.p + 
+  geom_point(data= labs,
+             aes(x=x, y=5, shape = Soil), size = 2, stroke = 1, fill = "#DFC27D") +
+  scale_fill_manual(values = c("#8C510A", "#DFC27D"),
+                    guide = guide_legend(title.hjust = 0.5, title.position = "top", ncol = 1)) +
+  scale_shape_manual(name = "", values = c(21,22,24),
+                     guide = guide_legend(title.hjust = 0.5, title.position = "top", nrow = 1)) +
+  theme_classic() +
+  theme(text = element_text(size = 13),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        legend.position = "top") 
+
+heat <- master.tidy %>% 
+  filter(Tissue == "Root") %>%  
+  filter(gene.id %in% root.soil.sig$gene) %>%
+  filter(!is.na(zscore_tis)) %>% 
+  inner_join(clust.ord, by = "gene.id") %>% 
+  inner_join(sample.ord2, by = "SampleID") %>% 
+  mutate(zscore_tis2 = ifelse(abs(zscore_tis) > 2, 2*sign(zscore_tis), zscore_tis)) %>% 
+  ggplot(aes(reorder(SampleID, sample_order), reorder(gene.id, gene_order))) +
+  geom_tile(aes(fill = zscore_tis2)) +
+  scale_fill_distiller(palette = "Greys", direction = 1,
+                       name = "Gene expression\n(z-score)",
+                       guide = guide_colorbar(title.hjust = 1, title.position = "left"),
+                       limits = c(-2,2)) +
+  ylab("Differentially expressed gene") +
+  theme_bw() +
+  theme(text = element_text(size = 11),
+        axis.text = element_blank(),
+        axis.title.x = element_blank(), 
+        axis.ticks = element_blank(),
+        axis.line.y = element_blank(),
+        panel.grid = element_blank(),
+        strip.text = element_text(size = 9),
+        legend.position = "bottom")
+
+cowplot::plot_grid(dendro, heat, ncol = 1, align = "v", axis = "lr", rel_heights = c(2,7))
+```
+
+Load data for GO enrichment analysis
+```{r}
+go.defs <- readRDS("../Data/go_defs.rds")
+go.topgo <- readRDS("../Data/msu_topgo.RDS")
+```
+
+Create GOdata object
+```{r}
+assayed.genes <- soil.res %>% filter(Tissue == "Root" & Treatment == "Ino") %>% .$gene
+
+tmp.sig.genes <- sample(assayed.genes, 100)
+tmp.gene.vec <- as.integer(assayed.genes %in% tmp.sig.genes)
+names(tmp.gene.vec) <- assayed.genes
+
+GOdata.BP <- new("topGOdata",
+                description = "test",
+                ontology = "BP",
+                allGenes = as.factor(tmp.gene.vec),
+                annot = annFUN.gene2GO,
+                gene2GO = go.topgo,
+                nodeSize = 10)
+
+GOdata.MF <- new("topGOdata",
+                description = "test",
+                ontology = "MF",
+                allGenes = as.factor(tmp.gene.vec),
+                annot = annFUN.gene2GO,
+                gene2GO = go.topgo,
+                nodeSize = 10)
+
+```
+
+Make function to run topGO pipeline
+```{r}
+run_topgo <- function(df, GOdata){
+  sig.genes <- df$gene.id
+  gene.vec <- as.integer(assayed.genes %in% sig.genes)
+  names(gene.vec) <- assayed.genes
+
+  GOdata <- updateGenes(GOdata, as.factor(gene.vec))
+
+  classic <- runTest(GOdata, algorithm = "classic", statistic = "fisher") 
+  w01 <- runTest(GOdata, algorithm = "weight01", statistic = "fisher")
+  
+  GenTable(
+    GOdata,
+    classic = classic,
+    w01 = w01,
+    orderBy = "classic",
+    ranksOf = "classic",
+    topNodes = length(usedGO(GOdata))
+    ) %>%
+    mutate(classic = as.numeric(classic),
+    w01 = as.numeric(w01)) %>% 
+    rename(GO = GO.ID)
+} 
+```
+
+Nest and run 
+```{r}
+cluster.nest <- clust.ord %>% 
+  ungroup() %>% 
+  mutate(Cluster = "Total") %>% 
+  group_by(Cluster) %>% 
+  nest()
+
+cluster.nest <- cluster.nest %>% 
+  dplyr::mutate(GO_BP = map(data, run_topgo, GOdata.BP),
+         GO_MF = map(data, run_topgo, GOdata.MF))
+```
+
+Unnest and compile results
+```{r}
+go.res.bp <- cluster.nest %>% 
+  unnest(GO_BP) %>% 
+  mutate(Ontology = "Biological Process")
+
+go.res.mf <- cluster.nest %>% 
+  unnest(GO_MF) %>% 
+  mutate(Ontology = "Molecular Function")
+
+go.res <- rbind(go.res.bp, go.res.mf)
+```
+
+Generate supplementary table with GO results
+```{r}
+go.res %>% 
+  ungroup() %>% 
+  filter(w01 < 0.05)
+
+supp.table.go.soil <- go.res %>% 
+  ungroup() %>% 
+  filter(w01 < 0.05) %>% 
+  select(-data, -GO_MF, -GO_BP) %>% 
+  select(Ontology, everything()) %>% 
+  select(-Cluster)
+
+write.table(supp.table.go.soil, "../Tables/supp.go.soil.tsv", quote = F, sep = "\t", row.names = F, col.names = T)
+```
+Plot GO results
+```{r}
+soil.go <- go.res %>% 
+  ungroup() %>% 
+  filter(w01 < 0.05) %>% 
+  mutate(Ontology = fct_recode(Ontology, 
+                               "Biological\nProcess" = "Biological Process",
+                               "Molecular\nFunction" = "Molecular Function")) %>% 
+  ggplot(aes(reorder(Term, -log10(w01)), -log10(w01))) +
+  geom_bar(stat = "identity") +
+  ylab("-log10 p-value") +
+  xlab("") +
+  facet_grid(Ontology ~ ., scale = "free", space = "free") +
+  coord_flip() +
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
+        text = element_text(size = 10),
+        strip.text = element_text(size = 9, colour = "white"),
+        strip.background = element_rect(fill = "gray25"),
+        legend.position = "top") 
+
+soil.go
+```
+Put together
+```{r}
+legend <- plot_grid(get_legend(dendro), get_legend(heat),ncol = 1, rel_heights = c(2,1))
+legend
+
+
+right <- plot_grid(legend, soil.go, ncol = 1, rel_heights = c(2,7), labels = c(NA, "B"), label_size = 20)
+
+plot_grid(left, right, nrow = 1, labels = c("A", NA), label_size = 20, rel_widths = c(4,5))
+```
